@@ -1,0 +1,496 @@
+---
+title: "IMapRepository<TInput, TEdit, TDto> — AutoMapper Repository Interface"
+sidebarTitle: "IMapRepository"
+description: "IMapRepository defines CRUD operations that map between entity, input, edit, and output DTO types using AutoMapper — the core contract for MapRepository."
+---
+
+`IMapRepository` is FoundationKit's AutoMapper-aware repository interface. Where `IBaseRepository<TModel>` works directly with entity types, `IMapRepository` accepts strongly-typed input DTOs (`TInputModel`), edit DTOs (`TEditModel`), and projects query results directly to output DTOs (`TDtoModel`) — keeping your controllers and service layer completely free of entity types. Every operation accepts or returns the appropriate DTO, and AutoMapper handles all translation between the wire layer and the database layer transparently.
+
+This design means your API endpoints never need to reference EF Core entity classes. Input validation, serialization, and persistence concerns are each confined to their own models, and the repository interface enforces those boundaries at compile time through its generic constraints.
+
+## Interface Variants
+
+FoundationKit ships two related interfaces in `FoundationKit.Repository.Interfaces`:
+
+| Interface | Type Parameters | Purpose |
+|---|---|---|
+| `IMapRepository<TInputModel, TEditModel, TDtoModel>` | 3 | Standard CRUD operations over DTOs |
+| `IMapRepository<T, TInputModel, TEditModel, TDtoModel>` | 4 | Extends the 3-param variant — adds `GetEntities` and `UpdatePartialEntityAsync` for direct entity access |
+
+The 4-parameter form inherits all 3-parameter members and adds two methods that expose the underlying `TEntity` (`T`) for scenarios where you need to drop down to raw entity manipulation (e.g., partial updates or complex bulk queries).
+
+## Generic Constraints
+
+```csharp
+// 3-parameter variant
+public interface IMapRepository<TInputModel, TEditModel, TDtoModel>
+    where TDtoModel   : BaseOutput
+    where TInputModel : BaseInput
+    where TEditModel  : BaseEdit
+
+// 4-parameter extended variant
+public interface IMapRepository<T, TInputModel, TEditModel, TDtoModel>
+    : IMapRepository<TInputModel, TEditModel, TDtoModel>
+    where TDtoModel   : BaseOutput
+    where TInputModel : BaseInput
+    where TEditModel  : BaseEdit
+    where T           : BaseModel
+```
+
+- **`TInputModel : BaseInput`** — The DTO used for create operations. `BaseInput` is an empty marker class; derive from it and add your create-specific properties.
+- **`TEditModel : BaseEdit`** — The DTO used for update operations. `BaseEdit` carries `[JsonIgnore]` audit fields (`Id`, `CreatedAt`, `CreatedBy`, etc.) so the client cannot overwrite them.
+- **`TDtoModel : BaseOutput`** — The read-side DTO returned by all query methods. `BaseOutput` exposes `Id`, `CreatedAt`, `CreatedAtStr`, and `CreatedBy`.
+- **`T : BaseModel`** — The EF Core entity (4-parameter variant only). Used by `GetEntities` and `UpdatePartialEntityAsync`.
+
+---
+
+## Methods
+
+### GetPaginatedList
+
+Returns a single page of projected `TDtoModel` results. Filtering and ordering expressions are written against `TDtoModel` properties, not the raw entity.
+
+```csharp
+Task<PaginationResult<TDtoModel>> GetPaginatedList(
+    Paginate paginate,
+    Expression<Func<TDtoModel, bool>>? expression = default,
+    Expression<Func<TDtoModel, object>>? ordered = default,
+    CancellationToken cancellationToken = default,
+    params Expression<Func<TDtoModel, object>>[] includes);
+```
+
+<ParamField path="paginate" type="Paginate" required>
+  Pagination parameters: `Page` (1-based), `Qyt` (items per page), `OrderByDesc` (sort direction), `NoPaginate` (return all results without paging), and `Query` (free-text token for optional use in your expression).
+</ParamField>
+
+<ParamField path="expression" type="Expression<Func<TDtoModel, bool>>?" default="null">
+  Optional filter predicate applied against the projected DTO query before Skip/Take.
+</ParamField>
+
+<ParamField path="ordered" type="Expression<Func<TDtoModel, object>>?" default="null">
+  Optional DTO property selector for ordering. Defaults to `CreatedAt` when `null`.
+</ParamField>
+
+<ParamField path="cancellationToken" type="CancellationToken" default="default">
+  Propagates cancellation from the calling HTTP request or background job.
+</ParamField>
+
+<ParamField path="includes" type="params Expression<Func<TDtoModel, object>>[]">
+  Navigation-property selectors for eager loading.
+</ParamField>
+
+<ResponseField name="PaginationResult&lt;TDtoModel&gt;" type="Task">
+  Contains `ActualPage`, `Qyt`, `PageTotal`, `Total`, and `Results` (`IReadOnlyCollection<TDtoModel>`).
+</ResponseField>
+
+---
+
+### GetList
+
+Returns a fully materialised list of `TDtoModel` instances matching the optional predicate, without pagination.
+
+```csharp
+Task<IEnumerable<TDtoModel>> GetList(
+    Expression<Func<TDtoModel, bool>>? expression = default,
+    bool orderDesc = true,
+    Expression<Func<TDtoModel, object>>? ordered = default,
+    CancellationToken cancellationToken = default,
+    params Expression<Func<TDtoModel, object>>[] includes);
+```
+
+<ParamField path="expression" type="Expression<Func<TDtoModel, bool>>?" default="null">
+  Optional filter predicate. Pass `null` to retrieve all rows.
+</ParamField>
+
+<ParamField path="orderDesc" type="bool" default="true">
+  `true` for descending order; `false` for ascending.
+</ParamField>
+
+<ParamField path="ordered" type="Expression<Func<TDtoModel, object>>?" default="null">
+  Property selector for ordering. Falls back to `CreatedAt` when `null`.
+</ParamField>
+
+<ParamField path="cancellationToken" type="CancellationToken" default="default">
+  Propagates cancellation.
+</ParamField>
+
+<ParamField path="includes" type="params Expression<Func<TDtoModel, object>>[]">
+  Navigation properties for eager loading.
+</ParamField>
+
+<ResponseField name="IEnumerable&lt;TDtoModel&gt;" type="Task">
+  An in-memory collection of projected DTOs. For a composable query, use `GetAll` instead.
+</ResponseField>
+
+---
+
+### GetAll
+
+Returns a composable `IQueryable<TDtoModel>` that projects entity data via AutoMapper's `ProjectTo`. No data is fetched until the query is enumerated.
+
+```csharp
+IQueryable<TDtoModel> GetAll(
+    Expression<Func<TDtoModel, bool>>? expression = default,
+    bool orderDesc = true,
+    Expression<Func<TDtoModel, object>>? ordered = default,
+    params Expression<Func<TDtoModel, object>>[] includes);
+```
+
+<ParamField path="expression" type="Expression<Func<TDtoModel, bool>>?" default="null">
+  Optional `Where` filter on the projected DTO query.
+</ParamField>
+
+<ParamField path="orderDesc" type="bool" default="true">
+  Sort direction.
+</ParamField>
+
+<ParamField path="ordered" type="Expression<Func<TDtoModel, object>>?" default="null">
+  Optional sort-property selector.
+</ParamField>
+
+<ParamField path="includes" type="params Expression<Func<TDtoModel, object>>[]">
+  Navigation properties for eager loading.
+</ParamField>
+
+<ResponseField name="IQueryable&lt;TDtoModel&gt;" type="IQueryable">
+  A deferred, AutoMapper-projected query. Chain further LINQ operators or call `.ToListAsync()` to execute.
+</ResponseField>
+
+---
+
+### Create
+
+Maps a `TInputModel` to the underlying entity, persists it in a transaction, and returns the saved record as a `TDtoModel`.
+
+```csharp
+Task<TDtoModel?> Create(TInputModel model, CancellationToken cancellationToken = default);
+```
+
+<ParamField path="model" type="TInputModel" required>
+  The input DTO carrying the data for the new entity. Must derive from `BaseInput`. AutoMapper translates it to the entity before insertion.
+</ParamField>
+
+<ParamField path="cancellationToken" type="CancellationToken" default="default">
+  Propagates cancellation.
+</ParamField>
+
+<ResponseField name="TDtoModel?" type="Task">
+  The persisted record projected back to `TDtoModel`, including any database-assigned values such as `Id` and `CreatedAt`.
+</ResponseField>
+
+---
+
+### Update
+
+Maps a `TEditModel` to the underlying entity and persists the update. When `verifyEntity` is `true`, the repository fetches the current DTO first to preserve `CreatedBy` and `CreatedAt` audit fields.
+
+```csharp
+Task<TDtoModel?> Update(TEditModel model, CancellationToken cancellationToken = default, bool verifyEntity = true);
+```
+
+<ParamField path="model" type="TEditModel" required>
+  The edit DTO with updated field values. Must derive from `BaseEdit`. The `Id` property on `BaseEdit` identifies which record to update.
+</ParamField>
+
+<ParamField path="cancellationToken" type="CancellationToken" default="default">
+  Propagates cancellation.
+</ParamField>
+
+<ParamField path="verifyEntity" type="bool" default="true">
+  When `true`, performs a `GetById` before updating to copy immutable audit fields (`CreatedBy`, `CreatedAt`) from the existing record onto the edit model. Set to `false` to skip the pre-fetch if you have pre-populated those fields yourself.
+</ParamField>
+
+<ResponseField name="TDtoModel?" type="Task">
+  The updated record as `TDtoModel`, or `null` if `verifyEntity` is `true` and no matching row was found.
+</ResponseField>
+
+---
+
+### GetById
+
+Fetches a single entity by primary key (`Guid`) and projects it to `TDtoModel`.
+
+```csharp
+Task<TDtoModel?> GetById(
+    Guid id,
+    bool asNotTracking = false,
+    CancellationToken cancellationToken = default,
+    params Expression<Func<TDtoModel, object>>[] includes);
+```
+
+<ParamField path="id" type="Guid" required>
+  The primary key of the record to fetch.
+</ParamField>
+
+<ParamField path="asNotTracking" type="bool" default="false">
+  When `true`, the query is executed with `AsNoTracking()`. Useful for read-only operations to reduce EF Core overhead.
+</ParamField>
+
+<ParamField path="cancellationToken" type="CancellationToken" default="default">
+  Propagates cancellation.
+</ParamField>
+
+<ParamField path="includes" type="params Expression<Func<TDtoModel, object>>[]">
+  Navigation properties to include on the projected DTO query.
+</ParamField>
+
+<ResponseField name="TDtoModel?" type="Task">
+  The projected DTO, or `null` if no record with the given `Id` exists.
+</ResponseField>
+
+---
+
+### SoftRemove
+
+Performs a logical delete by fetching the DTO, mapping it back to the entity, setting `IsDeleted = true`, and persisting the update.
+
+```csharp
+Task<bool> SoftRemove(Guid id, CancellationToken cancellationToken = default);
+```
+
+<ParamField path="id" type="Guid" required>
+  Primary key of the entity to soft-delete.
+</ParamField>
+
+<ParamField path="cancellationToken" type="CancellationToken" default="default">
+  Propagates cancellation.
+</ParamField>
+
+<ResponseField name="bool" type="Task">
+  `true` if the record was found and soft-deleted; `false` if no entity with the given `Id` was found.
+</ResponseField>
+
+---
+
+### Remove
+
+Permanently deletes the entity from the database. The record is fetched as a DTO, mapped back to the entity, then removed.
+
+```csharp
+Task<bool> Remove(Guid id, CancellationToken cancellationToken = default);
+```
+
+<ParamField path="id" type="Guid" required>
+  Primary key of the entity to delete.
+</ParamField>
+
+<ParamField path="cancellationToken" type="CancellationToken" default="default">
+  Propagates cancellation.
+</ParamField>
+
+<ResponseField name="bool" type="Task">
+  `true` if the record was found and removed; `false` otherwise.
+</ResponseField>
+
+---
+
+### Exist
+
+Checks whether any projected `TDtoModel` matches the given predicate.
+
+```csharp
+Task<bool> Exist(
+    Expression<Func<TDtoModel, bool>>? expression = default,
+    CancellationToken cancellationToken = default);
+```
+
+<ParamField path="expression" type="Expression<Func<TDtoModel, bool>>?" default="null">
+  Filter predicate. When `null`, the method returns `false` (unlike `IBaseRepository.ExistAsync` which returns `true` for any row when the expression is null).
+</ParamField>
+
+<ParamField path="cancellationToken" type="CancellationToken" default="default">
+  Propagates cancellation.
+</ParamField>
+
+<ResponseField name="bool" type="Task">
+  `true` when at least one projected DTO matches the expression; `false` otherwise, including when no expression is provided.
+</ResponseField>
+
+---
+
+### GetOneAsync
+
+Returns the first projected `TDtoModel` matching the predicate, or `null` when nothing matches.
+
+```csharp
+Task<TDtoModel?> GetOneAsync(
+    Expression<Func<TDtoModel, bool>> expression,
+    CancellationToken cancellationToken = default);
+```
+
+<ParamField path="expression" type="Expression<Func<TDtoModel, bool>>" required>
+  Filter predicate applied to the projected DTO query.
+</ParamField>
+
+<ParamField path="cancellationToken" type="CancellationToken" default="default">
+  Propagates cancellation.
+</ParamField>
+
+<ResponseField name="TDtoModel?" type="Task">
+  The first matching DTO, or `null`.
+</ResponseField>
+
+---
+
+### Count
+
+Counts the number of projected DTOs that satisfy all supplied predicates.
+
+```csharp
+Task<int> Count(
+    CancellationToken cancellationToken = default,
+    params Expression<Func<TDtoModel, bool>>[] expression);
+```
+
+<ParamField path="cancellationToken" type="CancellationToken" default="default">
+  Propagates cancellation.
+</ParamField>
+
+<ParamField path="expression" type="params Expression<Func<TDtoModel, bool>>[]">
+  Zero or more filter predicates that are ANDed together. Passing none counts all rows.
+</ParamField>
+
+<ResponseField name="int" type="Task">
+  Row count satisfying all predicates.
+</ResponseField>
+
+---
+
+### CommitAndResultAsync
+
+Flushes all pending EF Core change-tracker mutations within a database transaction and returns `null` on success, or an error message string on failure. The transaction is automatically rolled back if an exception is caught.
+
+```csharp
+Task<string?> CommitAndResultAsync(CancellationToken cancellationToken = default);
+```
+
+<ParamField path="cancellationToken" type="CancellationToken" default="default">
+  Propagates cancellation.
+</ParamField>
+
+<ResponseField name="string?" type="Task">
+  `null` on a successful commit; the base exception message string if the transaction failed.
+</ResponseField>
+
+---
+
+### GetEntities *(extended interface only)*
+
+Returns a raw `IQueryable<T>` over the underlying entity set. Available only on `IMapRepository<T, TInputModel, TEditModel, TDtoModel>`.
+
+```csharp
+IQueryable<T> GetEntities(Expression<Func<T, bool>>? expression = null);
+```
+
+<ParamField path="expression" type="Expression<Func<T, bool>>?" default="null">
+  Optional filter applied directly to the entity `DbSet`. Pass `null` to get an unfiltered entity queryable.
+</ParamField>
+
+<ResponseField name="IQueryable&lt;T&gt;" type="IQueryable">
+  A deferred, untracked entity query. Useful when you need entity-level access not available through the DTO projection.
+</ResponseField>
+
+---
+
+### UpdatePartialEntityAsync *(extended interface only)*
+
+Attaches an entity and marks only the listed properties as `Modified`, producing a targeted `UPDATE` statement. Available only on `IMapRepository<T, TInputModel, TEditModel, TDtoModel>`.
+
+```csharp
+Task UpdatePartialEntityAsync(
+    T entity,
+    List<Expression<Func<T, object?>>> updateExpression,
+    CancellationToken cancellationToken = default);
+```
+
+<ParamField path="entity" type="T" required>
+  The entity to partially update. Must have its `Id` property set.
+</ParamField>
+
+<ParamField path="updateExpression" type="List<Expression<Func<T, object?>>>" required>
+  Property selectors for each column to include in the `UPDATE`. Unlisted properties are untouched.
+</ParamField>
+
+<ParamField path="cancellationToken" type="CancellationToken" default="default">
+  Propagates cancellation.
+</ParamField>
+
+<ResponseField name="Task" type="Task">
+  Completes when `SaveChangesAsync` has finished.
+</ResponseField>
+
+---
+
+## Usage Example
+
+Implement `IMapRepository` by extending `MapRepository<TContext, TEntity, TInputModel, TEditModel, TDtoModel>`.
+
+<CodeGroup>
+
+```csharp DTOs
+public class CreatePersonInput : BaseInput
+{
+    public string FirstName { get; set; } = string.Empty;
+    public string LastName  { get; set; } = string.Empty;
+    public string Email     { get; set; } = string.Empty;
+}
+
+public class EditPersonInput : BaseEdit
+{
+    public string FirstName { get; set; } = string.Empty;
+    public string LastName  { get; set; } = string.Empty;
+}
+
+public class PersonDto : BaseOutput
+{
+    public string FirstName { get; set; } = string.Empty;
+    public string LastName  { get; set; } = string.Empty;
+    public string Email     { get; set; } = string.Empty;
+    public string FullName  => $"{FirstName} {LastName}";
+}
+```
+
+```csharp Repository
+// Custom interface extending the 4-param variant for partial-update support
+public interface IPersonRepository
+    : IMapRepository<Person, CreatePersonInput, EditPersonInput, PersonDto>
+{
+}
+
+// Concrete implementation via MapRepository
+public class PersonRepository
+    : MapRepository<AppDbContext, Person, CreatePersonInput, EditPersonInput, PersonDto>,
+      IPersonRepository
+{
+    public PersonRepository(AppDbContext context, IMapper mapper)
+        : base(context, mapper) { }
+}
+```
+
+```csharp Controller
+[ApiController]
+[Route("api/[controller]")]
+public class PersonController : ControllerBase
+{
+    private readonly IPersonRepository _repo;
+    public PersonController(IPersonRepository repo) => _repo = repo;
+
+    [HttpGet]
+    public Task<PaginationResult<PersonDto>> List([FromQuery] Paginate paginate)
+        => _repo.GetPaginatedList(paginate, cancellationToken: HttpContext.RequestAborted);
+
+    [HttpPost]
+    public Task<PersonDto?> Create([FromBody] CreatePersonInput input)
+        => _repo.Create(input, HttpContext.RequestAborted);
+
+    [HttpPut]
+    public Task<PersonDto?> Update([FromBody] EditPersonInput input)
+        => _repo.Update(input, HttpContext.RequestAborted);
+
+    [HttpDelete("{id:guid}")]
+    public Task<bool> Delete(Guid id)
+        => _repo.SoftRemove(id, HttpContext.RequestAborted);
+}
+```
+
+</CodeGroup>

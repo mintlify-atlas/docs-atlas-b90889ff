@@ -1,47 +1,274 @@
 ---
-title: "Quickstart"
-description: "Begin with a guide on the fastest path to a successful outcome"
+title: "Get Started with FoundationKit in Your ASP.NET Core App"
+sidebarTitle: "Quickstart"
+description: "Install FoundationKit, define your first entity and repository, wire up a controller, and make your first paginated API call in under 10 minutes."
 ---
 
-Describe how someone begins using your product. What is the first thing they need to do? Are there any prerequisites?
-
-A quickstart should take someone from zero to using your product. They'll get a quick win and a sense of what they can accomplish.
-
-## Prerequisites
-
-Before you begin, you must have:
-
-- Requirement one (for example, Node.js 18+, a free account, an API key)
-- Requirement two (for example, a compatible device, a compatible browser, a compatible operating system)
-
-## Get started
+By the end of this guide you will have a fully working ASP.NET Core Web API that stores a `Person` entity in a PostgreSQL database, exposes standard CRUD endpoints through FoundationKit's base controller, and returns paginated results from a single `GET` request — all without writing a single line of query or routing logic yourself.
 
 <Steps>
-  <Step title="Install">
-    Describe how to install your product or sign up.
+
+  <Step title="Install the NuGet packages">
+    Add all four FoundationKit packages to your ASP.NET Core project. The umbrella `FoundationKit` package already depends on the other three, but installing them explicitly lets you control versions independently.
 
     ```bash
-    npm install your-package
+    dotnet add package FoundationKit
+    dotnet add package FoundationKit.EntityFrameworkCore
+    dotnet add package FoundationKit.Repository
+    dotnet add package FoundationKit.Extensions
     ```
+
+    <Tip>
+      If your project only needs the repository pattern without the base controllers or encryption service, you can install `FoundationKit.Repository` and `FoundationKit.EntityFrameworkCore` alone and skip the umbrella package.
+    </Tip>
   </Step>
-  <Step title="Configure">
-    Describe any setup or configuration needed before first use.
+
+  <Step title="Define your entity model">
+    Create a class that inherits `BaseModel`. You get `Id` (Guid), `CreatedAt`, `UpdatedAt`, `IsDeleted`, `CreatedBy`, and `UpdatedBy` for free. Add only the properties specific to your domain.
+
+    ```csharp
+    using FoundationKit.Domain.Models;
+    using System.ComponentModel.DataAnnotations.Schema;
+
+    namespace MyApp.Domain.Models;
+
+    public class Person : BaseModel
+    {
+        public string? Name { get; set; }
+
+        // Override and mark [NotMapped] for any base property you don't need persisted
+        [NotMapped]
+        public override string? CreatedBy { get; set; }
+    }
+    ```
+
+    `BaseModel` exposes the following members automatically:
+
+    | Property | Type | Notes |
+    |---|---|---|
+    | `Id` | `Guid` | Primary key |
+    | `CreatedAt` | `DateTime` | Set on insert |
+    | `UpdatedAt` | `DateTime?` | Set on update; override and add `[Column]` to persist |
+    | `IsDeleted` | `bool` | Used by `SoftRemoveAsync` |
+    | `CreatedBy` | `string?` | Optional auditing field |
+    | `UpdatedBy` | `string?` | Optional auditing field |
+  </Step>
+
+  <Step title="Create your DbContext">
+    Inherit from `FoundationKitDbContext` and add a `DbSet<T>` for each entity. Then register the context in `Program.cs` using your preferred provider (the example project uses PostgreSQL via Npgsql).
+
+    ```csharp
+    using FoundationKit.Domain.Persistence;
+    using Microsoft.EntityFrameworkCore;
+    using MyApp.Domain.Models;
+
+    namespace MyApp.Domain.Persistence;
+
+    public class ApplicationDbContext : FoundationKitDbContext
+    {
+        public ApplicationDbContext(DbContextOptions<ApplicationDbContext> options)
+            : base(options)
+        {
+        }
+
+        public DbSet<Person> Persons { get; set; }
+    }
+    ```
+
+    Register the context in `Program.cs`:
+
+    ```csharp
+    builder.Services.AddDbContext<ApplicationDbContext>(options =>
+        options.UseNpgsql(builder.Configuration.GetConnectionString("postgres")));
+    ```
+
+    Then run the EF Core tooling to create your first migration:
 
     ```bash
-    your-cli init
+    dotnet ef migrations add InitialCreate
+    dotnet ef database update
     ```
   </Step>
-  <Step title="Run it">
-    Show the first thing a user does to see it working.
+
+  <Step title="Create a repository (service) class">
+    Inherit `BaseRepository<TContext, TModel>` to get the full `IBaseRepository<TModel>` implementation — `CreateAsync`, `UpdateAsync`, `GetByIdAsync`, `GetPaginatedListAsync`, `SoftRemoveAsync`, and more — with transactional commit handling included.
+
+    First declare the interface:
+
+    ```csharp
+    using FoundationKit.Repository.Interfaces;
+    using MyApp.Domain.Models;
+
+    namespace MyApp.Infrastructure.Interfaces;
+
+    public interface IPersonService : IBaseRepository<Person>
+    {
+    }
+    ```
+
+    Then implement it:
+
+    ```csharp
+    using FoundationKit.Repository.Services;
+    using MyApp.Domain.Models;
+    using MyApp.Domain.Persistence;
+    using MyApp.Infrastructure.Interfaces;
+
+    namespace MyApp.Infrastructure.Services;
+
+    public class PersonService : BaseRepository<ApplicationDbContext, Person>, IPersonService
+    {
+        public PersonService(ApplicationDbContext context) : base(context)
+        {
+        }
+    }
+    ```
+
+    You can override any method in `BaseRepository` to add custom query logic. The `GetAll` method returns an `IQueryable<TModel>` that you can further compose before materialising.
+  </Step>
+
+  <Step title="Register services with AddFoundationKit">
+    Wire everything up in `Program.cs`. `AddFoundationKit` scans your assembly for AutoMapper profiles and registers the mapping infrastructure. Add your scoped service registration alongside it.
+
+    ```csharp
+    using FoundationKit.Extensions;
+    using System.Reflection;
+    using MyApp.Domain.Persistence;
+    using MyApp.Infrastructure.Interfaces;
+    using MyApp.Infrastructure.Services;
+
+    AppContext.SetSwitch("Npgsql.EnableLegacyTimestampBehavior", true);
+
+    var builder = WebApplication.CreateBuilder(args);
+
+    builder.Services.AddControllers();
+    builder.Services.AddEndpointsApiExplorer();
+    builder.Services.AddSwaggerGen();
+
+    // Register FoundationKit (also sets up AutoMapper from this assembly)
+    builder.Services.AddFoundationKit(Assembly.GetExecutingAssembly());
+
+    // Register your database context
+    builder.Services.AddDbContext<ApplicationDbContext>(options =>
+        options.UseNpgsql(builder.Configuration.GetConnectionString("postgres")));
+
+    // Register your service
+    builder.Services.AddScoped<IPersonService, PersonService>();
+
+    var app = builder.Build();
+
+    if (app.Environment.IsDevelopment())
+    {
+        app.UseSwagger();
+        app.UseSwaggerUI();
+    }
+
+    app.UseHttpsRedirection();
+    app.MapControllers();
+    app.Run();
+    ```
+
+    <Note>
+      `AddFoundationKit` calls `services.AddAutoMapper(assembly)` internally. If you are using `MapRepository` you must have at least one AutoMapper `Profile` class in the scanned assembly, otherwise AutoMapper will throw at startup.
+    </Note>
+
+    If you also want the RSA/AES encryption service available across your application, chain `AddFoundationKitEncryptor`:
+
+    ```csharp
+    builder.Services.AddFoundationKitEncryptor(new()
+    {
+        PublicKey  = builder.Configuration["Encryption:PublicKey"]!,
+        PrivateKey = builder.Configuration["Encryption:PrivateKey"]!,
+        HeaderAes  = "AES"
+    });
+    ```
+  </Step>
+
+  <Step title="Create a controller">
+    Inherit `ApiCoreController<TModel, TService>`. The base class maps the route as `api/[controller]` and generates five endpoints automatically: `GET` (paginated list), `GET {id}`, `POST`, `PUT {id}`, and `DELETE {id}` (soft delete).
+
+    ```csharp
+    using FoundationKit.Core.Controllers;
+    using MyApp.Domain.Models;
+    using MyApp.Infrastructure.Interfaces;
+
+    namespace MyApp.Controllers;
+
+    public class PeopleController : ApiCoreController<Person, IPersonService>
+    {
+        public PeopleController(IPersonService service) : base(service)
+        {
+        }
+    }
+    ```
+
+    That is the entire controller. The following endpoints are now available:
+
+    | Method | Route | Description |
+    |---|---|---|
+    | `GET` | `/api/people?page=1&qyt=10` | Paginated list |
+    | `GET` | `/api/people/{id}` | Single entity by GUID |
+    | `POST` | `/api/people` | Create entity |
+    | `PUT` | `/api/people/{id}` | Full update |
+    | `DELETE` | `/api/people/{id}` | Soft delete (`IsDeleted = true`) |
+
+    Override any virtual action method on the controller to add custom behaviour, authorization attributes, or response shaping.
+  </Step>
+
+  <Step title="Run and test with a paginated GET">
+    Start your application and send a paginated request:
 
     ```bash
-    your-cli start
+    dotnet run
     ```
+
+    ```bash
+    curl "https://localhost:5001/api/people?page=1&qyt=10"
+    ```
+
+    A successful response looks like this:
+
+    ```json
+    {
+      "actualPage": 1,
+      "qyt": 10,
+      "pageTotal": 3,
+      "total": 25,
+      "results": [
+        {
+          "id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+          "name": "Jane Smith",
+          "createdAt": "2024-05-01T10:30:00",
+          "updatedAt": null,
+          "isDeleted": false,
+          "createdBy": null,
+          "updatedBy": null
+        }
+      ]
+    }
+    ```
+
+    Pass `noPaginate=true` as a query parameter to return all records without pagination:
+
+    ```bash
+    curl "https://localhost:5001/api/people?noPaginate=true"
+    ```
+
+    Pass `orderByDesc=false` to sort ascending by `CreatedAt`:
+
+    ```bash
+    curl "https://localhost:5001/api/people?page=1&qyt=10&orderByDesc=false"
+    ```
+
+    <Tip>
+      The `Paginate` query model binds `page`, `qyt`, `noPaginate`, and `orderByDesc` automatically from the query string. You do not need to add any `[FromQuery]` attributes on your controller action — `ApiCoreController` handles the binding.
+    </Tip>
   </Step>
+
 </Steps>
 
-<Tip>
-  Give people a way to get help. This could be a link to a support page, a chat with a customer support agent, or a forum for your product.
+## Next Steps
 
-  Example: Need help? Reach out to us at [support@yourcompany.com](mailto:support@yourcompany.com).
-</Tip>
+- Read the [Packages](/packages) reference to understand what each NuGet package provides and when to install only a subset.
+- Use `AddFoundationKitIdentityWithMapper<TUser, TDbContext>` if your project needs ASP.NET Core Identity baked in alongside AutoMapper.
+- Explore `ApiMapController` when you want strict separation between input DTOs, edit DTOs, and output DTOs with AutoMapper-powered mapping at the repository layer.

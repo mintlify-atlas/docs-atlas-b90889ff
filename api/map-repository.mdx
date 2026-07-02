@@ -1,0 +1,333 @@
+---
+title: "MapRepository — AutoMapper-Backed EF Core Repository"
+sidebarTitle: "MapRepository"
+description: "MapRepository is the abstract AutoMapper implementation of IMapRepository. It uses ProjectTo for DB-level DTO projection and maps inputs to entities automatically."
+---
+
+`MapRepository` is the abstract base class to use when your application follows the DTO pattern and you want the repository layer to own all mapping concerns. Unlike `BaseRepository`, which works exclusively with raw EF Core entity types, `MapRepository` accepts typed input DTOs for writes and automatically projects entity queries to output DTOs at the database level using AutoMapper's `ProjectTo`. This means your controllers and services only ever see DTOs — entity types are confined to the repository and the EF Core `DbContext`.
+
+Choose `MapRepository` over `BaseRepository` when:
+
+- Your API surface exposes DTOs that differ structurally from the database entity (e.g., flattened navigation properties, computed fields, or hidden audit columns).
+- You want `SELECT` statements to include only the columns your DTO needs, reducing data transfer.
+- You want a single AutoMapper profile to serve as the canonical mapping definition for both reads and writes.
+
+## Class Signature
+
+```csharp
+public abstract class MapRepository<TContext, TEntity, TInputModel, TEditModel, TDtoModel>
+    : IMapRepository<TEntity, TInputModel, TEditModel, TDtoModel>
+    where TContext    : DbContext
+    where TEntity     : BaseModel
+    where TInputModel : BaseInput
+    where TDtoModel   : BaseOutput
+    where TEditModel  : BaseEdit
+```
+
+| Type Parameter | Constraint | Role |
+|---|---|---|
+| `TContext` | `DbContext` | Your application's EF Core context |
+| `TEntity` | `BaseModel` | The database entity class |
+| `TInputModel` | `BaseInput` | DTO for create operations |
+| `TEditModel` | `BaseEdit` | DTO for update operations |
+| `TDtoModel` | `BaseOutput` | Read-side DTO returned by all queries |
+
+## Constructor
+
+```csharp
+protected MapRepository(TContext context, IMapper mapper)
+```
+
+<ParamField path="context" type="TContext" required>
+  The EF Core `DbContext` instance. Stored privately; subclasses interact with the database exclusively through the base class methods.
+</ParamField>
+
+<ParamField path="mapper" type="IMapper" required>
+  An AutoMapper `IMapper` instance. Used for `TInputModel → TEntity`, `TEditModel → TEntity`, and `TEntity → TDtoModel` mappings, as well as the reverse `TDtoModel → TEntity` mapping needed by `SoftRemove` and `Remove`.
+</ParamField>
+
+---
+
+## Key Implementation Details
+
+### GetAll — Query-Level DTO Projection
+
+`GetAll` is the foundation of every read method. It calls `ProjectTo<TDtoModel>(_mapper.ConfigurationProvider)` on the raw entity `DbSet`, converting the LINQ expression tree into a SQL `SELECT` that only fetches the columns your DTO maps to. No intermediate entity objects are materialised in memory.
+
+```csharp
+public virtual IQueryable<TDtoModel> GetAll(
+    Expression<Func<TDtoModel, bool>>? expression = default,
+    bool orderDesc = true,
+    Expression<Func<TDtoModel, object>>? ordered = default,
+    params Expression<Func<TDtoModel, object>>[] includes)
+{
+    var results = _context.Set<TEntity>()
+        .ProjectTo<TDtoModel>(_mapper.ConfigurationProvider)
+        .AsQueryable();
+
+    if (expression != null) results = results.Where(expression);
+    foreach (var include in includes) results = results.Include(include);
+
+    // Ordering: explicit selector → fallback to CreatedAt
+    if (ordered != null && orderDesc)       results = results.OrderByDescending(ordered);
+    else if (!orderDesc && ordered != null) results = results.OrderBy(ordered);
+    else if (orderDesc)                     results = results.OrderByDescending(x => x.CreatedAt);
+    else                                    results = results.OrderBy(x => x.CreatedAt);
+
+    return results;
+}
+```
+
+Because filtering and ordering are applied **after** `ProjectTo`, expressions are written against `TDtoModel` properties, not entity properties. Ensure your AutoMapper profile maps every property your filter or sort expressions reference.
+
+---
+
+### Create — Input DTO to Entity to Output DTO
+
+```csharp
+public virtual async Task<TDtoModel?> Create(
+    TInputModel model, CancellationToken cancellationToken = default)
+{
+    var entity = _mapper.Map<TInputModel, TEntity>(model);
+    _context.Set<TEntity>().Add(entity);
+    await CommitAsync(cancellationToken);
+    return _mapper.Map<TEntity, TDtoModel>(entity);
+}
+```
+
+1. Maps `TInputModel` → `TEntity` via `_mapper.Map`.
+2. Adds the entity to the `DbSet` and commits within a transaction.
+3. Maps the persisted entity (now with its database-assigned `Id`, `CreatedAt`, etc.) back to `TDtoModel` for the response.
+
+---
+
+### Update — Audit-Preserving Entity Update
+
+```csharp
+public virtual async Task<TDtoModel?> Update(
+    TEditModel model,
+    CancellationToken cancellationToken = default,
+    bool verifyEntity = true)
+```
+
+When `verifyEntity == true`:
+1. Calls `GetById(model.Id, asNotTracking: true)` to fetch the current DTO.
+2. Copies `CreatedBy` and `CreatedAt` from the existing DTO onto `model` to prevent accidental overwrite of immutable audit fields.
+3. Maps `TEditModel` → `TEntity` and calls `Update` + `CommitAsync`.
+4. Maps the updated entity back to `TDtoModel`.
+
+Returns `null` immediately when `verifyEntity` is `true` and no record with the given `Id` exists.
+
+---
+
+### SoftRemove — DTO-Mapped Logical Delete
+
+```csharp
+public virtual async Task<bool> SoftRemove(Guid id, CancellationToken cancellationToken = default)
+{
+    var result = await GetById(id, asNotTracking: true);
+    if (result == null) return false;
+
+    var entity = _mapper.Map<TDtoModel, TEntity>(result);
+    entity.IsDeleted = true;
+
+    _context.Set<TEntity>().Update(entity);
+    await CommitAsync(cancellationToken);
+    return true;
+}
+```
+
+Because `MapRepository` does not hold entity references after queries (all data is projected to DTOs), `SoftRemove` must map the DTO back to an entity before it can set `IsDeleted = true`. This means your AutoMapper profile **must** include a `TDtoModel → TEntity` reverse mapping.
+
+---
+
+### GetEntities — Raw Entity Access
+
+The extended `IMapRepository<T, ...>` interface exposes `GetEntities`, which returns an unfiltered `IQueryable<TEntity>` directly from the `DbSet`. Use this when you need entity-level data not available through the DTO projection.
+
+```csharp
+public IQueryable<TEntity> GetEntities(Expression<Func<TEntity, bool>>? expression = null)
+    => _context.Set<TEntity>().AsQueryable();
+```
+
+<Note>
+  The `expression` parameter is accepted by the method signature but is not applied in the current implementation — the returned `IQueryable` is always unfiltered. Chain a `.Where()` call on the returned queryable to apply your predicate.
+</Note>
+
+---
+
+### UpdatePartialEntityAsync — Column-Level Partial Update
+
+Uses EF Core's change-tracker entry API to mark only listed properties as `Modified`, generating a targeted `UPDATE` statement without fetching the current row.
+
+```csharp
+public async Task UpdatePartialEntityAsync(
+    TEntity entity,
+    List<Expression<Func<TEntity, object?>>> updateExpression,
+    CancellationToken cancellationToken = default)
+{
+    var entry = _context.Entry(entity);
+    foreach (var property in updateExpression)
+        entry.Property(property).IsModified = true;
+
+    await _context.SaveChangesAsync(cancellationToken);
+}
+```
+
+---
+
+## AutoMapper Profile Setup
+
+Every `MapRepository` subclass requires three mapping directions to be configured in AutoMapper:
+
+<Warning>
+  All three mapping profiles — `TInputModel → TEntity`, `TEditModel → TEntity`, and `TEntity → TDtoModel` — **must** be registered. Missing any one of them will cause a runtime `AutoMapperMappingException` (or an `InvalidOperationException` from `ProjectTo`) the first time the corresponding operation is called. The `TDtoModel → TEntity` reverse mapping is also required for `SoftRemove` and `Remove`.
+</Warning>
+
+```csharp
+public class PersonMappingProfile : Profile
+{
+    public PersonMappingProfile()
+    {
+        // Create: TInputModel → TEntity
+        CreateMap<CreatePersonInput, Person>();
+
+        // Update: TEditModel → TEntity
+        CreateMap<EditPersonInput, Person>();
+
+        // Read: TEntity → TDtoModel (used by ProjectTo)
+        CreateMap<Person, PersonDto>()
+            .ForMember(d => d.FullName, opt => opt.MapFrom(s => $"{s.FirstName} {s.LastName}"));
+
+        // Reverse: TDtoModel → TEntity (required by SoftRemove / Remove)
+        CreateMap<PersonDto, Person>();
+    }
+}
+```
+
+<Tip>
+  Call `builder.Services.AddFoundationKit(Assembly.GetExecutingAssembly())` in `Program.cs` to automatically discover and register every `Profile` subclass in your assembly — including `PersonMappingProfile` above. You do not need to call `services.AddAutoMapper(...)` separately; `AddFoundationKit` handles that registration.
+</Tip>
+
+---
+
+## Complete Implementation Example
+
+<CodeGroup>
+
+```csharp Entity
+public class Person : BaseModel
+{
+    public string FirstName { get; set; } = string.Empty;
+    public string LastName  { get; set; } = string.Empty;
+    public string Email     { get; set; } = string.Empty;
+}
+```
+
+```csharp DTOs
+// Create DTO
+public class CreatePersonInput : BaseInput
+{
+    public string FirstName { get; set; } = string.Empty;
+    public string LastName  { get; set; } = string.Empty;
+    public string Email     { get; set; } = string.Empty;
+}
+
+// Edit DTO — Id and audit fields are [JsonIgnore] in BaseEdit
+public class EditPersonInput : BaseEdit
+{
+    public string FirstName { get; set; } = string.Empty;
+    public string LastName  { get; set; } = string.Empty;
+}
+
+// Read DTO — Id, CreatedAt, CreatedBy come from BaseOutput
+public class PersonDto : BaseOutput
+{
+    public string FirstName { get; set; } = string.Empty;
+    public string LastName  { get; set; } = string.Empty;
+    public string Email     { get; set; } = string.Empty;
+    public string FullName  { get; set; } = string.Empty;
+}
+```
+
+```csharp AutoMapper Profile
+public class PersonMappingProfile : Profile
+{
+    public PersonMappingProfile()
+    {
+        CreateMap<CreatePersonInput, Person>();
+
+        CreateMap<EditPersonInput, Person>();
+
+        CreateMap<Person, PersonDto>()
+            .ForMember(d => d.FullName,
+                opt => opt.MapFrom(s => $"{s.FirstName} {s.LastName}"));
+
+        // Required reverse mapping for SoftRemove / Remove
+        CreateMap<PersonDto, Person>();
+    }
+}
+```
+
+```csharp Repository
+public interface IPersonRepository
+    : IMapRepository<Person, CreatePersonInput, EditPersonInput, PersonDto>
+{
+    Task<bool> EmailExistsAsync(string email, CancellationToken ct = default);
+}
+
+public class PersonRepository
+    : MapRepository<AppDbContext, Person, CreatePersonInput, EditPersonInput, PersonDto>,
+      IPersonRepository
+{
+    public PersonRepository(AppDbContext context, IMapper mapper)
+        : base(context, mapper) { }
+
+    public Task<bool> EmailExistsAsync(string email, CancellationToken ct = default)
+        => Exist(p => p.Email == email && !p.IsDeleted, ct);
+}
+```
+
+```csharp Registration
+// Program.cs
+builder.Services.AddScoped<IPersonRepository, PersonRepository>();
+
+// Registers AutoMapper profiles + FoundationKit services in one call
+builder.Services.AddFoundationKit(Assembly.GetExecutingAssembly());
+```
+
+```csharp Controller
+[ApiController]
+[Route("api/[controller]")]
+public class PersonController : ControllerBase
+{
+    private readonly IPersonRepository _repo;
+    public PersonController(IPersonRepository repo) => _repo = repo;
+
+    [HttpGet]
+    public Task<PaginationResult<PersonDto>> List([FromQuery] Paginate paginate)
+        => _repo.GetPaginatedList(
+            paginate,
+            expression: p => !p.IsDeleted,
+            cancellationToken: HttpContext.RequestAborted);
+
+    [HttpGet("{id:guid}")]
+    public Task<PersonDto?> Get(Guid id)
+        => _repo.GetById(id, asNotTracking: true,
+            cancellationToken: HttpContext.RequestAborted);
+
+    [HttpPost]
+    public Task<PersonDto?> Create([FromBody] CreatePersonInput input)
+        => _repo.Create(input, HttpContext.RequestAborted);
+
+    [HttpPut]
+    public Task<PersonDto?> Update([FromBody] EditPersonInput input)
+        => _repo.Update(input, HttpContext.RequestAborted);
+
+    [HttpDelete("{id:guid}")]
+    public Task<bool> Archive(Guid id)
+        => _repo.SoftRemove(id, HttpContext.RequestAborted);
+}
+```
+
+</CodeGroup>

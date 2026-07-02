@@ -1,0 +1,197 @@
+---
+title: "Abstract Base Controllers for API and MVC Apps"
+sidebarTitle: "Base Controllers"
+description: "ApiCoreController, ApiMapController, and MvcCoreController provide ready-to-use CRUD endpoints. Override any virtual method to customize behavior."
+---
+
+FoundationKit ships three abstract controller base classes that eliminate boilerplate CRUD code. `ApiCoreController` targets REST APIs that work directly with domain models, `ApiMapController` adds AutoMapper support for APIs that expose separate input/output DTOs, and `MvcCoreController` handles server-side Razor MVC applications with built-in SweetAlert2 notification support. All three expose virtual methods so you can override any endpoint with custom logic.
+
+<Note>
+All three controllers use the `[Route("api/[controller]")]` attribute convention. The controller name is derived from the class name with the `Controller` suffix removed. For MVC controllers this works alongside the default `{controller}/{action}` convention.
+</Note>
+
+## ApiCoreController\<TModel, TService\>
+
+`ApiCoreController<TModel, TService>` is an abstract `ControllerBase` decorated with `[Route("api/[controller]")]` and `[ApiController]`. It exposes five virtual endpoints backed by an `IBaseRepository<TModel>` service.
+
+**Generic constraints:**
+- `TModel : BaseModel` — your entity class that inherits `BaseModel`
+- `TService : IBaseRepository<TModel>` — a service/repository implementing `IBaseRepository<TModel>`
+
+**Endpoints provided out of the box:**
+
+| Method | Route | Action |
+|---|---|---|
+| `GET` | `/api/[controller]` | Paginated list via `[FromQuery] Paginate` |
+| `GET` | `/api/[controller]/{id:guid}` | Fetch single entity by GUID |
+| `POST` | `/api/[controller]` | Create entity, returns `201 Created` |
+| `PUT` | `/api/[controller]/{id}` | Update entity, returns `200 OK` |
+| `DELETE` | `/api/[controller]/{id:guid}` | Soft-delete entity, returns `200 OK` |
+
+Create a controller by inheriting the base class and injecting your service:
+
+```csharp
+// Controllers/PersonController.cs
+[Route("api/[controller]")]
+public class PersonController : ApiCoreController<Person, IPersonService>
+{
+    public PersonController(IPersonService service) : base(service)
+    {
+    }
+}
+```
+
+That single class provides all five endpoints with no additional code. To customise an endpoint, override the virtual method:
+
+```csharp
+// Override Create to stamp the current user before saving
+[HttpPost]
+public override async Task<IActionResult> AddAsync(
+    Person model,
+    CancellationToken cancellationToken = default)
+{
+    model.CreatedBy = GetCurrentUserId(); // your helper
+    return await base.AddAsync(model, cancellationToken);
+}
+```
+
+## ApiMapController\<TService, TDtoModel, TInputModel, TEditModel\>
+
+`ApiMapController` is the DTO-aware counterpart. It implements `IApiMapController<TInputModel, TEditModel>` and delegates work to an `IMapRepository`, which uses AutoMapper under the hood to translate between domain models and DTOs.
+
+**Generic constraints:**
+- `TService : IMapRepository<TInputModel, TEditModel, TDtoModel>`
+- `TInputModel : BaseInput` — DTO used for `POST`
+- `TEditModel : BaseEdit` — DTO used for `PUT`
+- `TDtoModel : BaseOutput` — DTO returned from `GET` endpoints
+
+**Same five endpoints, now DTO-driven:**
+
+| Method | Route | Action |
+|---|---|---|
+| `GET` | `/api/[controller]` | Paginated list returning `TDtoModel` |
+| `GET` | `/api/[controller]/{id:guid}` | Single `TDtoModel` |
+| `POST` | `/api/[controller]` | Accepts `TInputModel`, returns `201 Created` |
+| `PUT` | `/api/[controller]/{id}` | Accepts `TEditModel`, returns `200 OK` |
+| `DELETE` | `/api/[controller]/{id:guid}` | Soft-delete, returns `200 OK` |
+
+```csharp
+// Controllers/PeopleController.cs
+public class PeopleController : ApiMapController<IPersonMapService, PersonDto, PersonInput, PersonEdit>
+{
+    public PeopleController(IPersonMapService service) : base(service)
+    {
+    }
+}
+```
+
+You can inject additional services and override any endpoint:
+
+```csharp
+public class PeopleController : ApiMapController<IPersonMapService, PersonDto, PersonInput, PersonEdit>
+{
+    private readonly IPersonMapService _service;
+
+    public PeopleController(IPersonMapService service) : base(service)
+    {
+        _service = service;
+    }
+
+    // Override Create to attach the caller's identity
+    [HttpPost]
+    public override async Task<IActionResult> Create(
+        PersonInput inputModel,
+        CancellationToken cancellationToken = default)
+    {
+        inputModel.CreatedBy = User.FindFirstValue(ClaimTypes.NameIdentifier);
+        return await base.Create(inputModel, cancellationToken);
+    }
+}
+```
+
+<Tip>
+Use `ApiMapController` for any API that needs to decouple the request/response shape from the database model — for example, hiding internal IDs, combining fields, or applying validation annotations that shouldn't live on domain entities.
+</Tip>
+
+## MvcCoreController\<TModel, TService\>
+
+`MvcCoreController<TModel, TService>` extends `Controller` (Razor/MVC) and implements `IMvcCoreController<TModel>`. It provides server-rendered views for the classic create/read/update/delete flow, plus built-in notification support via SweetAlert2.
+
+**Generic constraints:**
+- `TModel : BaseModel`
+- `TService : IBaseRepository<TModel>`
+
+**Actions provided:**
+
+| Method | HTTP | Action |
+|---|---|---|
+| `Index` | `GET` | Paginated list view |
+| `Create` | `GET` | Render empty create form |
+| `Create` | `POST` | Validate, save, redirect to `Index` |
+| `Update` | `GET` | Load entity into edit form |
+| `Update` | `POST` | Validate, save, redirect to `Index` |
+| `Delete` | `POST` | Soft-delete entity |
+
+**Notification helpers:**
+
+`ShowAlert(title, type, message, config)` stores a SweetAlert2 call in `TempData["Notification"]`, which your Razor partial view reads and renders. It wraps the `SendNotification` extension method from `ControllerExtensions`.
+
+```csharp
+// Available MvcCoreNotification values
+MvcCoreNotification.Success  // green check
+MvcCoreNotification.Error    // red X
+MvcCoreNotification.Warning  // orange triangle
+MvcCoreNotification.Question // question mark
+MvcCoreNotification.Info     // blue info
+```
+
+**`GetUserId` helper:**
+
+`GetUserId(claimType)` reads the current user's claim from the `HttpContext`. By default it reads `ClaimTypes.NameIdentifier`:
+
+```csharp
+var userId = GetUserId(); // returns the user's ID string, or null if unauthenticated
+```
+
+**Example — MVC controller for products:**
+
+```csharp
+// Controllers/ProductController.cs
+public class ProductController : MvcCoreController<Product, IProductService>
+{
+    public ProductController(IProductService service) : base(service)
+    {
+    }
+
+    // Override Create POST to stamp the current user
+    [HttpPost]
+    public override async Task<IActionResult> Create(
+        Product inputModel,
+        CancellationToken cancellationToken = default)
+    {
+        inputModel.CreatedBy = GetUserId();
+        return await base.Create(inputModel, cancellationToken);
+    }
+}
+```
+
+The base class has customisable success/error message properties you can override per controller:
+
+```csharp
+protected override string CreateSuccess { get; set; } = "Product created!";
+protected override string CreateError   { get; set; } = "Could not create product.";
+protected override string UpdateSuccess { get; set; } = "Product updated!";
+protected override string UpdateError   { get; set; } = "Could not update product.";
+```
+
+## Comparing the three controller types
+
+| Feature | `ApiCoreController` | `ApiMapController` | `MvcCoreController` |
+|---|---|---|---|
+| Base class | `ControllerBase` | `ControllerBase` | `Controller` |
+| Response format | JSON (`TModel`) | JSON (`TDtoModel`) | Razor views |
+| Input type | `TModel` directly | `TInputModel` / `TEditModel` | `TModel` directly |
+| AutoMapper | ✗ | ✓ | ✗ |
+| Notifications | ✗ | ✗ | ✓ SweetAlert2 |
+| GetUserId helper | ✗ | ✗ | ✓ |
+| Typical use case | Simple internal APIs | Public REST APIs with DTOs | Admin dashboards / MVC apps |

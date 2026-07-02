@@ -1,0 +1,171 @@
+---
+title: "Minimal API Handlers with IEndpointRouteHandler"
+sidebarTitle: "Minimal API Handlers"
+description: "Organize ASP.NET Core Minimal API routes using IEndpointRouteHandler and UseFoundationKitApiHandlers for clean, class-based endpoint registration by feature."
+---
+
+Placing all Minimal API route definitions directly in `Program.cs` works fine for small projects, but as an application grows the file becomes a maintenance burden. FoundationKit's `IEndpointRouteHandler` pattern moves each feature's routes into its own class, mirroring the organisation you'd use with traditional controllers — but retaining all the performance benefits of Minimal APIs. A single call to `UseFoundationKitApiHandlers` scans your assembly, finds every handler class, and registers all routes automatically.
+
+## The IEndpointRouteHandler interface
+
+`IEndpointRouteHandler` is a minimal contract from `FoundationKit.API.Handlers.EndpointRouteHandler`. It declares one method:
+
+```csharp
+public interface IEndpointRouteHandler
+{
+    void MapEndpoints(IEndpointRouteBuilder app);
+}
+```
+
+Any concrete, non-abstract, non-generic class that implements this interface and has a **parameterless constructor** is discovered automatically by `UseFoundationKitApiHandlers`.
+
+<Note>
+Handler classes must have a parameterless constructor because `EndpointRouteBuilderExtensions.MapEndpoints` instantiates them with `Activator.CreateInstance(type)`. If you need services, use `[FromServices]` parameters on individual route delegates rather than constructor injection on the handler class itself.
+</Note>
+
+## Creating a handler
+
+Create one class per resource or feature. Implement `MapEndpoints` to register all routes for that feature using the standard `IEndpointRouteBuilder` API:
+
+```csharp
+// Handlers/PeoplesHandler.cs
+using FoundationKit.API.Handlers.EndpointRouteHandler;
+
+public class PeoplesHandler : IEndpointRouteHandler
+{
+    public void MapEndpoints(IEndpointRouteBuilder app)
+    {
+        app.MapGet("/api/people", GetAll)
+            .WithTags("People")
+            .WithName("get all peoples")
+            .Produces(404)
+            .ProducesValidationProblem();
+    }
+
+    private IResult GetAll()
+    {
+        return TypedResults.Ok("people here");
+    }
+}
+```
+
+You can add as many routes as needed inside a single `MapEndpoints` call. Group them by resource or use `app.MapGroup("/api/people")` to share a route prefix:
+
+```csharp
+public class PeoplesHandler : IEndpointRouteHandler
+{
+    public void MapEndpoints(IEndpointRouteBuilder app)
+    {
+        var group = app.MapGroup("/api/people").WithTags("People");
+
+        group.MapGet("/",      GetAll)   .WithName("get-all-people");
+        group.MapGet("/{id:guid}", GetById).WithName("get-person-by-id");
+    }
+
+    private IResult GetAll() =>
+        TypedResults.Ok(new[] { "Alice", "Bob" });
+
+    private IResult GetById(Guid id) =>
+        TypedResults.Ok(new { Id = id, Name = "Alice" });
+}
+```
+
+<Tip>
+Keep one handler class per resource or feature domain (e.g. `PeoplesHandler`, `OrdersHandler`, `ProductsHandler`). This makes it easy to locate all routes for a given resource and keeps each file small and focused.
+</Tip>
+
+## Registration
+
+Call `UseFoundationKitApiHandlers` once in `Program.cs`, passing the assembly that contains your handler classes. The extension method scans the assembly, instantiates every `IEndpointRouteHandler`, and calls `MapEndpoints` on each:
+
+```csharp
+// Program.cs
+using System.Reflection;
+using FoundationKit.API.Extensions;
+
+var builder = WebApplication.CreateBuilder(args);
+builder.Services.AddEndpointsApiExplorer();
+builder.Services.AddSwaggerGen();
+
+var app = builder.Build();
+
+app.UseSwagger();
+app.UseSwaggerUI();
+app.UseHttpsRedirection();
+
+// Scan the executing assembly for all IEndpointRouteHandler implementations
+app.UseFoundationKitApiHandlers(Assembly.GetExecutingAssembly());
+
+app.Run();
+```
+
+`UseFoundationKitApiHandlers` returns the `WebApplication` instance, so it can be chained with other middleware calls.
+
+**How the scanner works** (from `EndpointRouteBuilderExtensions`):
+
+```csharp
+var handlerTypes = assembly.GetTypes().Where(t =>
+    t.IsClass &&
+    !t.IsAbstract &&
+    !t.IsGenericType &&
+    t.GetConstructor(Type.EmptyTypes) != null &&
+    typeof(IEndpointRouteHandler).IsAssignableFrom(t));
+
+foreach (var type in handlerTypes)
+{
+    var handler = (IEndpointRouteHandler)Activator.CreateInstance(type)!;
+    handler.MapEndpoints(app);
+}
+```
+
+## Combining with inline routes and controllers
+
+Handler-based routes and inline `MapXxx` calls coexist naturally on the same `WebApplication`. The example project uses `UseFoundationKitApiHandlers` for the `PeoplesHandler` read endpoint while defining write operations inline:
+
+```csharp
+// Program.cs — mixing handler-based and inline routes
+using FoundationKit.API.Extensions;
+
+var builder = WebApplication.CreateBuilder(args);
+builder.Services.AddControllers();
+builder.Services.AddScoped<IPersonService, PersonService>();
+
+var app = builder.Build();
+
+app.UseHttpsRedirection();
+
+// Handler-based routes: GET /api/people (from PeoplesHandler)
+app.UseFoundationKitApiHandlers(Assembly.GetExecutingAssembly());
+
+// Inline routes alongside handlers
+app.MapPost("/api/person/add", async (
+    [FromServices] IPersonService service,
+    Person person,
+    CancellationToken cancellationToken) =>
+{
+    return await service.CreateAsync(person, cancellationToken);
+}).WithName("add");
+
+app.MapPut("/api/person/update", async (
+    [FromServices] IPersonService service,
+    Person person,
+    CancellationToken cancellationToken) =>
+{
+    await service.UpdatePartialEntityAsync(person, [x => x.Name], cancellationToken);
+    return Results.Ok();
+}).WithName("update");
+
+// Traditional controllers can coexist too
+// app.MapControllers();
+
+app.Run();
+```
+
+<CardGroup cols={2}>
+  <Card title="Handler-based routes" icon="folder-tree">
+    Use `IEndpointRouteHandler` classes for stable, resource-level routes that benefit from organisation and discoverability.
+  </Card>
+  <Card title="Inline routes" icon="code">
+    Keep ephemeral or single-purpose endpoints inline in `Program.cs` when they don't warrant a dedicated handler file.
+  </Card>
+</CardGroup>

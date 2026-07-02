@@ -1,0 +1,254 @@
+---
+title: "EFCoreConfiguration<TEntity> — Entity Type Configuration Base"
+sidebarTitle: "EF Configuration"
+description: "EFCoreConfiguration is an abstract IEntityTypeConfiguration that applies the soft-delete global query filter. Override ConfigureEF to add entity-specific mappings."
+---
+
+Every entity that inherits from `BaseModel` carries an `IsDeleted` flag for
+soft-delete support. For that flag to be useful, it must be enforced at the
+query layer automatically — otherwise every developer on the team has to
+remember to add a `.Where(x => !x.IsDeleted)` clause to every LINQ query.
+`EFCoreConfiguration<TEntity>` solves this by registering a global EF Core
+query filter the moment a configuration class is applied, and then delegating
+to your own `ConfigureEF` implementation for entity-specific column mappings,
+indexes, and relationships.
+
+---
+
+## EFCoreConfiguration\<TEntity\>
+
+```csharp
+namespace FoundationKit.Domain.Config;
+
+public abstract class EFCoreConfiguration<TEntity> : IEntityTypeConfiguration<TEntity>
+    where TEntity : BaseModel
+{
+    public void Configure(EntityTypeBuilder<TEntity> builder)
+    {
+        builder.HasQueryFilter(x => !x.IsDeleted);
+        ConfigureEF(builder);
+    }
+
+    public abstract void ConfigureEF(EntityTypeBuilder<TEntity> builder);
+}
+```
+
+### Members
+
+<ResponseField name="Configure(EntityTypeBuilder&lt;TEntity&gt; builder)" type="void">
+  The method called by EF Core's model-building pipeline when it applies this
+  configuration. It first registers `HasQueryFilter(x => !x.IsDeleted)` on
+  the entity, then forwards to `ConfigureEF` for any additional configuration
+  you supply. You should **not** override or call this method yourself.
+</ResponseField>
+
+<ResponseField name="ConfigureEF(EntityTypeBuilder&lt;TEntity&gt; builder)" type="abstract void">
+  Implement this method to provide entity-specific configuration — column
+  names, string lengths, required constraints, indexes, relationships, and
+  so on. It is called by `Configure` after the query filter has been applied,
+  so the filter is always in place regardless of what you do inside
+  `ConfigureEF`.
+</ResponseField>
+
+### The global query filter
+
+Calling `HasQueryFilter(x => !x.IsDeleted)` in `Configure` instructs EF Core
+to append `AND IsDeleted = 0` (or the database equivalent) to **every** SQL
+query that targets `TEntity`, including those performed through navigation
+properties. This means your repositories and service methods stay clean:
+
+```csharp
+// This automatically excludes soft-deleted people — no extra .Where() needed
+var people = await dbContext.People.ToListAsync();
+```
+
+<Note>
+  When you genuinely need to include soft-deleted records — for example in an
+  admin restore endpoint or a data-export job — call `.IgnoreQueryFilters()`
+  on the specific query:
+
+  ```csharp
+  var allIncludingDeleted = await dbContext.People
+      .IgnoreQueryFilters()
+      .Where(p => p.IsDeleted)
+      .ToListAsync();
+  ```
+
+  `IgnoreQueryFilters()` removes **all** global filters from that query,
+  not just the soft-delete one, so be mindful if you have applied additional
+  filters in your configuration.
+</Note>
+
+---
+
+## Implementing a configuration class
+
+Derive from `EFCoreConfiguration<TEntity>` and implement `ConfigureEF` to
+describe your entity's schema. The example below configures a `Person` entity
+with custom column names, a max-length constraint, a unique index on the email
+address, and a required relationship to a `Department`.
+
+```csharp
+using FoundationKit.Domain.Config;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Metadata.Builders;
+
+public class PersonConfiguration : EFCoreConfiguration<Person>
+{
+    public override void ConfigureEF(EntityTypeBuilder<Person> builder)
+    {
+        builder.ToTable("people");
+
+        builder.Property(p => p.FirstName)
+               .HasColumnName("first_name")
+               .HasMaxLength(120)
+               .IsRequired();
+
+        builder.Property(p => p.LastName)
+               .HasColumnName("last_name")
+               .HasMaxLength(120)
+               .IsRequired();
+
+        builder.Property(p => p.Email)
+               .HasColumnName("email")
+               .HasMaxLength(256)
+               .IsRequired();
+
+        builder.HasIndex(p => p.Email)
+               .IsUnique();
+
+        builder.HasOne(p => p.Department)
+               .WithMany(d => d.People)
+               .HasForeignKey(p => p.DepartmentId)
+               .OnDelete(DeleteBehavior.Restrict);
+    }
+}
+```
+
+### Registering configurations in OnModelCreating
+
+Register all configurations at once by scanning the assembly that contains them:
+
+```csharp
+protected override void OnModelCreating(ModelBuilder modelBuilder)
+{
+    base.OnModelCreating(modelBuilder);
+
+    // Discovers and applies every IEntityTypeConfiguration in the assembly
+    modelBuilder.ApplyConfigurationsFromAssembly(typeof(AppDbContext).Assembly);
+}
+```
+
+Or register individual configurations manually:
+
+```csharp
+protected override void OnModelCreating(ModelBuilder modelBuilder)
+{
+    base.OnModelCreating(modelBuilder);
+
+    modelBuilder.ApplyConfiguration(new PersonConfiguration());
+    modelBuilder.ApplyConfiguration(new OrderConfiguration());
+}
+```
+
+<Tip>
+  `ApplyConfigurationsFromAssembly` is the recommended approach for large
+  projects. It uses reflection to find every concrete class that implements
+  `IEntityTypeConfiguration<T>` in the given assembly, so new configurations
+  are picked up automatically without touching `OnModelCreating`.
+</Tip>
+
+---
+
+## MigrationDbContextConfigAssembly
+
+`MigrationDbContextConfigAssembly` is an advanced utility that extends EF
+Core's internal `MigrationsAssembly` to support schema-aware migrations. It
+enables migrations to accept an `IDbContextSchema` constructor parameter,
+allowing the same migration class to run against multiple schemas at runtime.
+
+```csharp
+// Implement the marker interface on your DbContext to provide the schema name
+public class AppDbContext : FoundationKitDbContext, IDbContextSchema
+{
+    public string Schema => "app";
+    // ...
+}
+```
+
+Register the replacement assembly class in your DbContext options to activate
+schema-aware migration creation:
+
+```csharp
+builder.Services.AddDbContext<AppDbContext>(options =>
+    options
+        .UseSqlServer(connectionString)
+        .ReplaceService<IMigrationsAssembly, MigrationDbContextConfigAssembly>());
+```
+
+<Warning>
+  `MigrationDbContextConfigAssembly` uses internal EF Core APIs
+  (`EF1001`). While it works correctly with the EF Core versions targeted by
+  FoundationKit, it may require adjustment when upgrading to a future major
+  version of EF Core.
+</Warning>
+
+---
+
+## EncryptorOption
+
+`EncryptorOption` is a configuration class for FoundationKit's encryption
+utilities. Bind it from `appsettings.json` or register it through the options
+pattern.
+
+```csharp
+namespace FoundationKit.Domain.Option;
+
+public class EncryptorOption
+{
+    public string?    PublicKey  { get; set; }
+    public string?    PrivateKey { get; set; }
+    public Encoding?  Enconding  { get; set; }
+    public string?    HeaderAes  { get; set; }
+}
+```
+
+<ResponseField name="PublicKey" type="string?">
+  Base64-encoded TweetNaCl public key used for asymmetric encryption operations.
+  Store this in a secrets manager or an environment variable rather than
+  directly in `appsettings.json`.
+</ResponseField>
+
+<ResponseField name="PrivateKey" type="string?">
+  Base64-encoded TweetNaCl private key. Must be kept confidential. Never
+  commit this value to source control.
+</ResponseField>
+
+<ResponseField name="HeaderAes" type="string?">
+  The name of the HTTP request header that carries AES configuration data
+  (for example `"AES"`). Used by FoundationKit middleware to locate the
+  AES context for a given request.
+</ResponseField>
+
+<ResponseField name="Enconding" type="System.Text.Encoding?">
+  The text encoding used when converting between strings and byte arrays
+  during encryption and decryption. Defaults to `UTF-8` when not explicitly
+  set.
+</ResponseField>
+
+### Binding from appsettings.json
+
+```json
+{
+  "EncryptorOption": {
+    "PublicKey": "<base64-public-key>",
+    "PrivateKey": "<base64-private-key>",
+    "HeaderAes": "AES"
+  }
+}
+```
+
+```csharp
+builder.Services.Configure<EncryptorOption>(
+    builder.Configuration.GetSection("EncryptorOption"));
+```

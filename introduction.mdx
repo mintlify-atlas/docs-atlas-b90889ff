@@ -1,0 +1,84 @@
+---
+title: "FoundationKit: Modular .NET 8 Building Blocks for ASP.NET Core"
+sidebarTitle: "Introduction"
+description: "FoundationKit is a suite of four .NET 8 NuGet packages delivering repositories, base models, EF Core contexts, encryption, and RabbitMQ event bus for ASP.NET Core projects."
+---
+
+FoundationKit is a production-ready suite of .NET 8 NuGet packages that eliminates the repetitive scaffolding every ASP.NET Core project demands. Instead of writing the same base models, generic repositories, paginated list helpers, and encryption wiring from scratch, FoundationKit ships those primitives as composable, independently installable packages — so you drop in exactly what you need and build product features from day one.
+
+<CardGroup cols={2}>
+  <Card
+    title="Quickstart"
+    icon="bolt"
+    href="/quickstart"
+  >
+    Install the packages, wire up your first entity, and hit a paginated API endpoint in under 10 minutes.
+  </Card>
+  <Card
+    title="Packages"
+    icon="box"
+    href="/packages"
+  >
+    Explore the four NuGet packages and choose the right combination for your project.
+  </Card>
+</CardGroup>
+
+## Why FoundationKit?
+
+Every ASP.NET Core project tends to start the same way: a `BaseEntity` with an `Id` and timestamps, a generic repository wrapping EF Core, a `PaginationResult<T>` type, and a handful of extension methods. FoundationKit codifies these patterns once — with full `async`/`CancellationToken` support, soft-delete, partial updates, and AutoMapper integration — so your team never debates the "right" way to wire them up again.
+
+## Four-Package Architecture
+
+FoundationKit is intentionally split into four separate NuGet packages, each with a narrow responsibility. You can install the whole suite or pick only what your project needs.
+
+<CardGroup cols={2}>
+  <Card title="FoundationKit" icon="layer-group">
+    The umbrella package. Provides `ApiCoreController`, `ApiMapController`, the `EncryptorService` (RSA + AES), DI extension methods (`AddFoundationKit`, `AddFoundationKitEncryptor`, `AddFoundationKitIdentity`), and the AES middleware. Depends on the three packages below.
+  </Card>
+  <Card title="FoundationKit.EntityFrameworkCore" icon="database">
+    Published as **FoundationKit.EntityFrameworkCore** on NuGet (the solution project is named `FoundationKit.Domain`). Provides `BaseModel`, `FoundationKitDbContext`, `FoundationKitIdentityDbContext`, and EF Core configuration helpers backed by `Microsoft.EntityFrameworkCore 8.0.4`.
+  </Card>
+  <Card title="FoundationKit.Repository" icon="arrows-split-up-and-left">
+    Provides `IBaseRepository<TModel>`, `BaseRepository<TContext, TModel>`, `IMapRepository`, `MapRepository`, and the `PaginationResult<T>` / `Paginate` value objects. Depends only on `FoundationKit.EntityFrameworkCore` and `AutoMapper 13.0.1`.
+  </Card>
+  <Card title="FoundationKit.Extensions" icon="puzzle-piece">
+    Standalone helpers: AES encryption (`AesEncryptionHelper`, `AesConfig`), TweetNaCl asymmetric cipher (`CipherTweetNaCl`), `QueryableExtensions.PaginateAsync`, `EnumExtension.GetDisplayName`, and controller response helpers. No dependency on EF Core.
+  </Card>
+</CardGroup>
+
+## Key Features
+
+<CardGroup cols={2}>
+  <Card title="Generic Repository Pattern" icon="code-branch">
+    `BaseRepository<TContext, TModel>` implements `CreateAsync`, `UpdateAsync`, `UpdatePartialEntityAsync`, `GetByIdAsync`, `GetPaginatedListAsync`, `SoftRemoveAsync`, `RemoveAsync`, `ExistAsync`, `CountAsync`, and `CommitAsync` with full transaction support out of the box.
+  </Card>
+  <Card title="Paginated API Controllers" icon="table-list">
+    `ApiCoreController` and `ApiMapController` expose standard CRUD endpoints — including a `GET /api/[controller]?page=1&qyt=10` paginated list — with zero boilerplate. Override any action to customise behaviour.
+  </Card>
+  <Card title="Soft Delete Built In" icon="trash-can-arrow-up">
+    `BaseModel` carries an `IsDeleted` flag. Calling `SoftRemoveAsync` sets the flag and saves — no data is ever destroyed unless you call `RemoveAsync` explicitly.
+  </Card>
+  <Card title="Encryption Services" icon="lock">
+    `AddFoundationKitEncryptor` registers `IEncryptorService` with configurable RSA public/private keys and an AES header. The optional `FoundationKitAesEncryptorMiddleware` transparently encrypts HTTP responses.
+  </Card>
+  <Card title="ASP.NET Core Identity Integration" icon="user-shield">
+    `AddFoundationKitIdentityWithMapper` and `AddFoundationKitIdentity` wire up `IdentityUser`, roles, `SignInManager`, and `EntityFrameworkStores` in one call, alongside AutoMapper if required.
+  </Card>
+  <Card title="AutoMapper First-Class" icon="arrows-rotate">
+    `AddFoundationKit(Assembly.GetExecutingAssembly())` registers AutoMapper profiles from your assembly automatically. `MapRepository` provides DTO-centric CRUD that maps between input, edit, and output types.
+  </Card>
+  <Card title="RabbitMQ Event Bus" icon="share-nodes">
+    An optional `FoundationKit.Events` package (not required for basic use) adds `AddEvents`, `AddSubscriber`, and `IRabbitMessageBroker.PublishAsync` for lightweight distributed messaging.
+  </Card>
+  <Card title=".NET 8 & NuGet Distribution" icon="cube">
+    All packages target `net8.0` exclusively and are published to NuGet.org under version **4.1.0**. CI publishing is handled by the `Release to NuGet` GitHub Actions workflow.
+  </Card>
+</CardGroup>
+
+## Target Framework & Distribution
+
+All four packages target **`net8.0`** and are distributed via NuGet.org. The current stable release is **4.1.0**. Source code is available at [github.com/Orbis25/FoundationKit](https://github.com/Orbis25/FoundationKit) under the MIT licence.
+
+<Note>
+  FoundationKit does not ship runtime migrations. You are responsible for running `dotnet ef migrations add` and `dotnet ef database update` against your own `DbContext` that inherits `FoundationKitDbContext`.
+</Note>

@@ -1,0 +1,259 @@
+---
+title: "BaseRepository<TContext, TModel> — EF Core Repository Base Class"
+sidebarTitle: "BaseRepository"
+description: "BaseRepository is the abstract EF Core implementation of IBaseRepository. Extend it with your DbContext and entity type to get full CRUD with transactions."
+---
+
+`BaseRepository<TContext, TModel>` is the abstract class that backs the `IBaseRepository<TModel>` interface with a full EF Core implementation. Inherit from it, pass your `DbContext` subclass as `TContext` and your entity as `TModel`, and you immediately gain a transaction-wrapped CRUD layer with ordered, filterable, paginated queries — no boilerplate required. All virtual methods can be overridden if you need to customise behaviour for a specific entity.
+
+Because the class is `abstract` it can never be instantiated directly; you must create a concrete subclass for each entity type you want to manage. Dependency injection is typically set up by registering the concrete class against its custom interface (or `IBaseRepository<TModel>` directly) in your service container.
+
+## Class Signature
+
+```csharp
+public abstract class BaseRepository<TContext, TModel> : IBaseRepository<TModel>
+    where TContext : DbContext
+    where TModel   : BaseModel
+```
+
+- **`TContext`** must be a class deriving from `Microsoft.EntityFrameworkCore.DbContext`.
+- **`TModel`** must be a class deriving from `FoundationKit.Domain.Models.BaseModel`, which provides `Id` (`Guid`), `CreatedAt`, `UpdatedAt`, `CreatedBy`, `UpdatedBy`, and `IsDeleted`.
+
+## Constructor
+
+```csharp
+protected BaseRepository(TContext context)
+```
+
+<ParamField path="context" type="TContext" required>
+  The EF Core `DbContext` instance. Inject this via the constructor of your concrete repository class. `BaseRepository` holds it in a `private readonly` field; derived classes do not have direct access to `_context` — all persistence goes through the base methods.
+</ParamField>
+
+---
+
+## Method Implementations
+
+### CreateAsync
+
+Adds the entity to the `DbSet<TModel>` and calls `CommitAsync` to persist it inside a database transaction.
+
+```csharp
+public virtual async Task<TModel> CreateAsync(TModel model, CancellationToken cancellationToken = default)
+{
+    _context.Set<TModel>().Add(model);
+    await CommitAsync(cancellationToken);
+    return model;
+}
+```
+
+The returned entity is the same instance that was passed in, now tracked by EF Core and reflecting any database-generated column values. Override this method if you need to set audit fields (e.g., `CreatedBy` from `IHttpContextAccessor`) before the insert.
+
+---
+
+### GetAll
+
+Builds an `IQueryable<TModel>` with optional `Where`, `Include`, and `OrderBy`/`OrderByDescending` operators applied in that order. No database round-trip occurs until the query is enumerated.
+
+```csharp
+public virtual IQueryable<TModel> GetAll(
+    Expression<Func<TModel, bool>>? expression = default,
+    bool orderDesc = true,
+    Expression<Func<TModel, object>>? ordered = default,
+    params Expression<Func<TModel, object>>[] includes)
+```
+
+**Ordering precedence:**
+
+| Condition | Applied ordering |
+|---|---|
+| `ordered != null` and `orderDesc == true` | `OrderByDescending(ordered)` |
+| `ordered != null` and `orderDesc == false` | `OrderBy(ordered)` |
+| `ordered == null` and `orderDesc == true` | `OrderByDescending(x => x.CreatedAt)` *(default)* |
+| `ordered == null` and `orderDesc == false` | `OrderBy(x => x.CreatedAt)` |
+
+The default sort by `CreatedAt` descending means the most recently created records appear first without any caller configuration, which suits most list endpoints.
+
+---
+
+### GetPaginatedListAsync
+
+Calls `GetAll` to build the filtered, ordered query, then applies Skip/Take based on `Paginate.Page` and `Paginate.Qyt`. When `Paginate.NoPaginate` is `true`, paging is skipped and all matching rows are returned in the `Results` collection.
+
+```csharp
+public virtual async Task<PaginationResult<TModel>> GetPaginatedListAsync(
+    Paginate paginate, ...)
+```
+
+**Pagination metadata** is populated only when `NoPaginate` is `false`:
+
+| Field | Value |
+|---|---|
+| `ActualPage` | `paginate.Page` |
+| `Qyt` | `paginate.Qyt` |
+| `PageTotal` | `Math.Ceiling(total / paginate.Qyt)` |
+| `Total` | `results.Count()` (before Skip/Take) |
+| `Results` | The paged items (`AsNoTracking`) |
+
+When `NoPaginate` is `true`, only `Results` is populated; all numeric metadata fields are zero. This is useful for export endpoints or dropdowns that need all records but want to reuse the same API shape.
+
+---
+
+### UpdateAsync
+
+Applies `DbSet<TModel>.Update(model)` and commits. The `verifyEntity` flag controls whether a pre-fetch guards against overwriting audit fields.
+
+```csharp
+public virtual async Task<TModel?> UpdateAsync(
+    TModel model,
+    CancellationToken cancellationToken = default,
+    bool verifyEntity = true)
+```
+
+When `verifyEntity == true`:
+1. `GetByIdAsync(model.Id, asNotTracking: true)` is called to retrieve the current stored entity.
+2. If the entity is not found, `null` is returned immediately (no update is attempted).
+3. `CreatedBy` and `CreatedAt` from the stored entity are copied onto `model` to prevent accidental audit-field corruption.
+4. `Update(model)` and `CommitAsync` are called.
+
+When `verifyEntity == false` the pre-fetch is skipped entirely — use this when you have already loaded the entity in the same unit of work and can guarantee the audit fields are correct.
+
+---
+
+### UpdatePartialEntityAsync
+
+Attaches the entity to the change tracker without loading it from the database, then marks only the properties in `updateExpression` as `EntityState.Modified`. EF Core generates an `UPDATE` statement targeting only those columns.
+
+```csharp
+public async Task UpdatePartialEntityAsync(
+    TModel entity,
+    List<Expression<Func<TModel, object?>>> updateExpression,
+    CancellationToken cancellationToken = default)
+```
+
+This method calls `SaveChangesAsync` directly rather than going through `CommitAsync` (no explicit transaction wrapper). If you need transactional guarantees, call `CommitAndResultAsync` or manage the transaction externally.
+
+**Example — update only the `Price` column:**
+
+```csharp
+var product = new Product { Id = id, Price = 49.99m };
+await _repo.UpdatePartialEntityAsync(
+    product,
+    new List<Expression<Func<Product, object?>>> { p => p.Price },
+    cancellationToken);
+```
+
+---
+
+### SoftRemoveAsync
+
+Fetches the entity by `Id`, sets `IsDeleted = true`, then calls `Update` + `CommitAsync`. The row is retained in the database with `IsDeleted` flagged so queries can filter it out.
+
+```csharp
+public virtual async Task<bool> SoftRemoveAsync(Guid id, CancellationToken cancellationToken = default)
+```
+
+Returns `false` immediately (without touching the database) when no entity with the given `Id` exists.
+
+---
+
+### CommitAsync
+
+Wraps `SaveChangesAsync` in an explicit database transaction. On success the transaction is committed; on any exception the transaction is rolled back and a `DbUpdateException` is thrown with the base exception's message.
+
+```csharp
+public async Task CommitAsync(CancellationToken cancellationToken = default)
+{
+    using var transaction = _context.Database.BeginTransaction();
+    try
+    {
+        await _context.SaveChangesAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
+    }
+    catch (Exception ex)
+    {
+        await transaction.RollbackAsync(cancellationToken);
+        throw new DbUpdateException(ex.GetBaseException().Message);
+    }
+}
+```
+
+<Note>
+  `CommitAsync` is `public` and can be called directly from a concrete repository when you have staged multiple change-tracker mutations (e.g., `Add` + `Update` on different entity sets) that must commit atomically. All of the `CreateAsync`, `UpdateAsync`, `SoftRemoveAsync`, and `RemoveAsync` methods call `CommitAsync` internally — they each run in their own transaction. If you need multiple operations in a **single** transaction, stage them manually and call `CommitAsync` once at the end.
+</Note>
+
+---
+
+### CommitAndResultAsync
+
+Identical in behaviour to `CommitAsync` but returns a `string?` instead of throwing on failure. Returns `null` when the commit succeeds, or the error message string when it fails (transaction is still rolled back).
+
+```csharp
+public async Task<string?> CommitAndResultAsync(CancellationToken cancellationToken = default)
+```
+
+Use this method when you want to surface database errors as API response messages without propagating exceptions through the call stack.
+
+```csharp
+var error = await _repo.CommitAndResultAsync(ct);
+if (error is not null)
+    return BadRequest(error);
+return Ok();
+```
+
+---
+
+## Minimal Implementation Example
+
+<CodeGroup>
+
+```csharp Entity
+// FoundationKit.Domain.Models
+public class Order : BaseModel
+{
+    public string Reference  { get; set; } = string.Empty;
+    public decimal Total     { get; set; }
+    public string Status     { get; set; } = "Pending";
+}
+```
+
+```csharp Repository
+public interface IOrderRepository : IBaseRepository<Order>
+{
+    Task<IEnumerable<Order>> GetByStatusAsync(string status, CancellationToken ct = default);
+}
+
+public class OrderRepository
+    : BaseRepository<AppDbContext, Order>, IOrderRepository
+{
+    public OrderRepository(AppDbContext context) : base(context) { }
+
+    public Task<IEnumerable<Order>> GetByStatusAsync(string status, CancellationToken ct = default)
+        => GetListAsync(
+            orderDesc: true,
+            expression: o => o.Status == status && !o.IsDeleted,
+            cancellationToken: ct);
+}
+```
+
+```csharp Registration
+// Program.cs / Startup.cs
+builder.Services.AddScoped<IOrderRepository, OrderRepository>();
+
+// Or use the FoundationKit extension (registers all repositories in the assembly)
+builder.Services.AddFoundationKit(Assembly.GetExecutingAssembly());
+```
+
+```csharp Partial Update Example
+// Update only the Status column — no other columns are touched
+var order = new Order { Id = orderId, Status = "Shipped" };
+await _orderRepo.UpdatePartialEntityAsync(
+    order,
+    new List<Expression<Func<Order, object?>>> { o => o.Status },
+    cancellationToken);
+```
+
+</CodeGroup>
+
+<Note>
+  Every `CreateAsync`, `UpdateAsync`, `SoftRemoveAsync`, and `RemoveAsync` call wraps its `SaveChangesAsync` in `BeginTransaction` / `CommitAsync` / `RollbackAsync`. If your database provider does not support explicit transactions (e.g., some in-memory providers used in unit tests), switch to `CommitAndResultAsync` or mock `CommitAsync` in your test setup.
+</Note>

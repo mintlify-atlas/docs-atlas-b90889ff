@@ -1,0 +1,446 @@
+---
+title: "IBaseRepository<TModel> — FoundationKit Repository Interface"
+sidebarTitle: "IBaseRepository"
+description: "IBaseRepository defines the full CRUD contract for entity repositories: paginated list, create, update, partial update, delete, soft-delete, and count."
+---
+
+`IBaseRepository<TModel>` is the core interface that establishes the full data-access contract for any entity-based repository in FoundationKit. By programming against this interface rather than a concrete class, your application code stays decoupled from EF Core specifics — swap out the backing store, apply decorators, or mock the interface in unit tests without touching business logic. Every method returns an awaitable `Task` (or an `IQueryable` for composable queries), and all async methods accept a `CancellationToken` so callers can respect request cancellation gracefully.
+
+The single generic parameter `TModel` must derive from `BaseModel`, which provides the standard audit fields (`Id`, `CreatedAt`, `UpdatedAt`, `CreatedBy`, `UpdatedBy`, `IsDeleted`) that the repository methods rely on internally.
+
+## Generic Constraint
+
+```csharp
+public interface IBaseRepository<TModel>
+    where TModel : BaseModel
+```
+
+`TModel` must inherit `FoundationKit.Domain.Models.BaseModel`. This ensures every entity exposes the `Id` (`Guid`), `IsDeleted`, `CreatedAt`, and `CreatedBy` properties that several methods depend on for audit-field preservation and soft-delete logic.
+
+---
+
+## Methods
+
+### GetPaginatedListAsync
+
+Returns a single page of results wrapped in a `PaginationResult<TModel>`, including total record count, total pages, and the actual page items.
+
+```csharp
+Task<PaginationResult<TModel>> GetPaginatedListAsync(
+    Paginate paginate,
+    Expression<Func<TModel, bool>>? expression = default,
+    Expression<Func<TModel, object>>? ordered = default,
+    CancellationToken cancellationToken = default,
+    params Expression<Func<TModel, object>>[] includes);
+```
+
+<ParamField path="paginate" type="Paginate" required>
+  Pagination settings. Contains `Page` (1-based page number), `Qyt` (items per page), `OrderByDesc` (sort direction), `NoPaginate` (bypass pagination and return all results), and `Query` (optional free-text search token your code can use in the expression).
+</ParamField>
+
+<ParamField path="expression" type="Expression<Func<TModel, bool>>?" default="null">
+  Optional LINQ predicate to filter the dataset before pagination is applied. Passed directly to a `Where` clause on the underlying `IQueryable`.
+</ParamField>
+
+<ParamField path="ordered" type="Expression<Func<TModel, object>>?" default="null">
+  Property selector used to order results. When `null`, ordering falls back to `CreatedAt` descending (or ascending based on `paginate.OrderByDesc`).
+</ParamField>
+
+<ParamField path="cancellationToken" type="CancellationToken" default="default">
+  Propagates cancellation from the calling HTTP request or background job.
+</ParamField>
+
+<ParamField path="includes" type="params Expression<Func<TModel, object>>[]">
+  Zero or more navigation-property selectors applied as EF Core `Include` calls, enabling eager loading without additional queries.
+</ParamField>
+
+<ResponseField name="PaginationResult&lt;TModel&gt;" type="Task">
+  Returns a `PaginationResult<TModel>` with `ActualPage`, `Qyt`, `PageTotal`, `Total`, and `Results`. When `NoPaginate` is `true`, only `Results` is populated (all matching rows) and pagination metadata fields are zero.
+</ResponseField>
+
+---
+
+### GetListAsync
+
+Returns the full unpaginated list of matching entities as a materialised `IEnumerable<TModel>`.
+
+```csharp
+Task<IEnumerable<TModel>> GetListAsync(
+    bool orderDesc = true,
+    Expression<Func<TModel, bool>>? expression = default,
+    Expression<Func<TModel, object>>? ordered = default,
+    CancellationToken cancellationToken = default,
+    params Expression<Func<TModel, object>>[] includes);
+```
+
+<ParamField path="orderDesc" type="bool" default="true">
+  When `true` (default) results are ordered descending; when `false`, ascending.
+</ParamField>
+
+<ParamField path="expression" type="Expression<Func<TModel, bool>>?" default="null">
+  Optional filter predicate. Pass `null` to retrieve all non-soft-deleted records.
+</ParamField>
+
+<ParamField path="ordered" type="Expression<Func<TModel, object>>?" default="null">
+  Optional ordering selector. Falls back to `CreatedAt` when `null`.
+</ParamField>
+
+<ParamField path="cancellationToken" type="CancellationToken" default="default">
+  Propagates cancellation.
+</ParamField>
+
+<ParamField path="includes" type="params Expression<Func<TModel, object>>[]">
+  Navigation-property selectors for eager loading.
+</ParamField>
+
+<ResponseField name="IEnumerable&lt;TModel&gt;" type="Task">
+  A fully materialised, in-memory collection of entities. Use `GetAll` if you need a composable `IQueryable` instead.
+</ResponseField>
+
+---
+
+### GetAll
+
+Returns a composable `IQueryable<TModel>` that has not yet hit the database. Use this when you need to chain additional LINQ operators before execution.
+
+```csharp
+IQueryable<TModel> GetAll(
+    Expression<Func<TModel, bool>>? expression = default,
+    bool orderDesc = true,
+    Expression<Func<TModel, object>>? ordered = default,
+    params Expression<Func<TModel, object>>[] includes);
+```
+
+<ParamField path="expression" type="Expression<Func<TModel, bool>>?" default="null">
+  Optional `Where` predicate.
+</ParamField>
+
+<ParamField path="orderDesc" type="bool" default="true">
+  Sort direction. Default ordering property is `CreatedAt`.
+</ParamField>
+
+<ParamField path="ordered" type="Expression<Func<TModel, object>>?" default="null">
+  Optional sort-property selector.
+</ParamField>
+
+<ParamField path="includes" type="params Expression<Func<TModel, object>>[]">
+  Navigation properties for eager loading via EF Core `Include`.
+</ParamField>
+
+<ResponseField name="IQueryable&lt;TModel&gt;" type="IQueryable">
+  A deferred query. Call `.ToListAsync()`, `.FirstOrDefaultAsync()`, or further `.Where()` / `.Select()` before awaiting.
+</ResponseField>
+
+---
+
+### CreateAsync
+
+Adds a new entity to the database inside a transaction and returns the persisted entity (with any database-generated values such as default timestamps populated).
+
+```csharp
+Task<TModel> CreateAsync(TModel model, CancellationToken cancellationToken = default);
+```
+
+<ParamField path="model" type="TModel" required>
+  The fully initialised entity instance to insert. Set all required properties before passing it in; `BaseModel` audit fields (`CreatedAt`, `CreatedBy`) are expected to be set by the caller or EF value generators.
+</ParamField>
+
+<ParamField path="cancellationToken" type="CancellationToken" default="default">
+  Propagates cancellation.
+</ParamField>
+
+<ResponseField name="TModel" type="Task">
+  The same entity instance, now tracked and reflecting any database-assigned values.
+</ResponseField>
+
+---
+
+### UpdateAsync
+
+Updates an existing entity. When `verifyEntity` is `true` (the default), the repository first fetches the current entity from the database to preserve the original `CreatedBy` and `CreatedAt` audit fields before applying the update.
+
+```csharp
+Task<TModel?> UpdateAsync(TModel model, CancellationToken cancellationToken = default, bool verifyEntity = true);
+```
+
+<ParamField path="model" type="TModel" required>
+  The entity with updated property values. Must have a valid `Id` matching an existing row.
+</ParamField>
+
+<ParamField path="cancellationToken" type="CancellationToken" default="default">
+  Propagates cancellation.
+</ParamField>
+
+<ParamField path="verifyEntity" type="bool" default="true">
+  When `true`, the repository looks up the existing record first and copies `CreatedBy` / `CreatedAt` from it before calling `Update`. Set to `false` to skip the pre-fetch if you are certain the audit fields are already correct on the supplied model.
+</ParamField>
+
+<ResponseField name="TModel?" type="Task">
+  The updated entity, or `null` if `verifyEntity` was `true` and no record with the given `Id` was found.
+</ResponseField>
+
+---
+
+### UpdatePartialEntityAsync
+
+Attaches an entity to the EF Core change tracker and marks only the specified properties as `Modified`, so that only those columns are included in the generated `UPDATE` statement.
+
+```csharp
+Task UpdatePartialEntityAsync(
+    TModel entity,
+    List<Expression<Func<TModel, object?>>> updateExpression,
+    CancellationToken cancellationToken = default);
+```
+
+<ParamField path="entity" type="TModel" required>
+  An entity instance (does not need to be tracked). Must have its `Id` set to target the correct row.
+</ParamField>
+
+<ParamField path="updateExpression" type="List<Expression<Func<TModel, object?>>>" required>
+  A list of property selectors identifying exactly which columns to update. Properties not listed are excluded from the SQL `UPDATE`.
+</ParamField>
+
+<ParamField path="cancellationToken" type="CancellationToken" default="default">
+  Propagates cancellation.
+</ParamField>
+
+<ResponseField name="Task" type="Task">
+  Completes when `SaveChangesAsync` has finished. Does **not** wrap the save in a full `CommitAsync` transaction — call `CommitAndResultAsync` separately if you need transaction semantics.
+</ResponseField>
+
+---
+
+### GetByIdAsync
+
+Fetches a single entity by its primary key (`Guid`), with optional eager loading and change-tracking control.
+
+```csharp
+Task<TModel?> GetByIdAsync(
+    Guid id,
+    bool asNotTracking = false,
+    CancellationToken cancellationToken = default,
+    params Expression<Func<TModel, object>>[] includes);
+```
+
+<ParamField path="id" type="Guid" required>
+  The primary key (`BaseModel.Id`) of the entity to retrieve.
+</ParamField>
+
+<ParamField path="asNotTracking" type="bool" default="false">
+  When `true`, the entity is returned without being added to the EF Core change tracker. Suitable for read-only scenarios where you do not intend to update the entity.
+</ParamField>
+
+<ParamField path="cancellationToken" type="CancellationToken" default="default">
+  Propagates cancellation.
+</ParamField>
+
+<ParamField path="includes" type="params Expression<Func<TModel, object>>[]">
+  Navigation properties for eager loading.
+</ParamField>
+
+<ResponseField name="TModel?" type="Task">
+  The matched entity, or `null` when no record with the given `Id` exists.
+</ResponseField>
+
+---
+
+### SoftRemoveAsync
+
+Performs a logical (soft) delete by setting `IsDeleted = true` on the entity and persisting the change. The row remains in the database and can be restored.
+
+```csharp
+Task<bool> SoftRemoveAsync(Guid id, CancellationToken cancellationToken = default);
+```
+
+<ParamField path="id" type="Guid" required>
+  Primary key of the entity to soft-delete.
+</ParamField>
+
+<ParamField path="cancellationToken" type="CancellationToken" default="default">
+  Propagates cancellation.
+</ParamField>
+
+<ResponseField name="bool" type="Task">
+  `true` when the record was found and updated successfully; `false` when no entity with the given `Id` exists.
+</ResponseField>
+
+---
+
+### RemoveAsync
+
+Permanently deletes an entity from the database. This operation cannot be undone.
+
+```csharp
+Task<bool> RemoveAsync(Guid id, CancellationToken cancellationToken = default);
+```
+
+<ParamField path="id" type="Guid" required>
+  Primary key of the entity to delete.
+</ParamField>
+
+<ParamField path="cancellationToken" type="CancellationToken" default="default">
+  Propagates cancellation.
+</ParamField>
+
+<ResponseField name="bool" type="Task">
+  `true` if the record was found and removed; `false` if no matching record was found.
+</ResponseField>
+
+---
+
+### ExistAsync
+
+Checks whether at least one entity matching the optional predicate exists in the database.
+
+```csharp
+Task<bool> ExistAsync(
+    Expression<Func<TModel, bool>>? expression = default,
+    CancellationToken cancellationToken = default);
+```
+
+<ParamField path="expression" type="Expression<Func<TModel, bool>>?" default="null">
+  Optional filter. When `null`, returns `true` if the table contains any rows at all.
+</ParamField>
+
+<ParamField path="cancellationToken" type="CancellationToken" default="default">
+  Propagates cancellation.
+</ParamField>
+
+<ResponseField name="bool" type="Task">
+  `true` if at least one matching row exists; otherwise `false`.
+</ResponseField>
+
+---
+
+### GetOneAsync
+
+Returns the first entity matching the given predicate, or `null` when no match is found. Maps directly to EF Core's `FirstOrDefaultAsync`.
+
+```csharp
+Task<TModel?> GetOneAsync(
+    Expression<Func<TModel, bool>> expression,
+    CancellationToken cancellationToken = default);
+```
+
+<ParamField path="expression" type="Expression<Func<TModel, bool>>" required>
+  Filter predicate. Unlike `ExistAsync`, this parameter is required.
+</ParamField>
+
+<ParamField path="cancellationToken" type="CancellationToken" default="default">
+  Propagates cancellation.
+</ParamField>
+
+<ResponseField name="TModel?" type="Task">
+  The first matching entity, or `null`.
+</ResponseField>
+
+---
+
+### CountAsync
+
+Returns the number of entities that satisfy all supplied predicates. Multiple expressions are ANDed together by successive `Where` calls.
+
+```csharp
+Task<int> CountAsync(
+    CancellationToken cancellationToken = default,
+    params Expression<Func<TModel, bool>>[] expressions);
+```
+
+<ParamField path="cancellationToken" type="CancellationToken" default="default">
+  Propagates cancellation.
+</ParamField>
+
+<ParamField path="expressions" type="params Expression<Func<TModel, bool>>[]">
+  Zero or more filter predicates. Passing no expressions counts all rows in the table.
+</ParamField>
+
+<ResponseField name="int" type="Task">
+  The row count satisfying all predicates.
+</ResponseField>
+
+---
+
+### CommitAndResultAsync
+
+Saves all pending change-tracker mutations inside a database transaction. Returns `null` on success or an error message string on failure, instead of throwing — useful when you want to control error handling in the calling layer rather than catching exceptions.
+
+```csharp
+Task<string?> CommitAndResultAsync(CancellationToken cancellationToken = default);
+```
+
+<ParamField path="cancellationToken" type="CancellationToken" default="default">
+  Propagates cancellation.
+</ParamField>
+
+<ResponseField name="string?" type="Task">
+  `null` when the transaction committed successfully. The base exception message string when an error occurred (transaction is rolled back automatically).
+</ResponseField>
+
+---
+
+## Usage Example
+
+Implement `IBaseRepository<TModel>` by extending `BaseRepository<TContext, TModel>`, which provides the complete EF Core-backed implementation out of the box.
+
+<CodeGroup>
+
+```csharp Entity
+// FoundationKit.Domain.Models
+public class Product : BaseModel
+{
+    public string Name { get; set; } = string.Empty;
+    public decimal Price { get; set; }
+    public int Stock { get; set; }
+}
+```
+
+```csharp Repository Interface
+// Extend the interface if you need custom query methods
+public interface IProductRepository : IBaseRepository<Product>
+{
+    Task<IEnumerable<Product>> GetLowStockAsync(int threshold, CancellationToken ct = default);
+}
+```
+
+```csharp Repository Implementation
+public class ProductRepository
+    : BaseRepository<AppDbContext, Product>, IProductRepository
+{
+    public ProductRepository(AppDbContext context) : base(context) { }
+
+    public async Task<IEnumerable<Product>> GetLowStockAsync(
+        int threshold, CancellationToken ct = default)
+    {
+        return await GetListAsync(
+            orderDesc: true,
+            expression: p => p.Stock < threshold && !p.IsDeleted,
+            cancellationToken: ct);
+    }
+}
+```
+
+```csharp Service Usage
+public class ProductService
+{
+    private readonly IProductRepository _repo;
+
+    public ProductService(IProductRepository repo) => _repo = repo;
+
+    public async Task<PaginationResult<Product>> ListPageAsync(Paginate paginate, CancellationToken ct)
+        => await _repo.GetPaginatedListAsync(paginate, p => !p.IsDeleted, cancellationToken: ct);
+
+    public async Task<Product> AddAsync(Product product, CancellationToken ct)
+        => await _repo.CreateAsync(product, ct);
+
+    public async Task<bool> ArchiveAsync(Guid id, CancellationToken ct)
+        => await _repo.SoftRemoveAsync(id, ct);
+
+    public async Task PatchPriceAsync(Product product, CancellationToken ct)
+        => await _repo.UpdatePartialEntityAsync(
+            product,
+            new List<Expression<Func<Product, object?>>> { p => p.Price },
+            ct);
+}
+```
+
+</CodeGroup>

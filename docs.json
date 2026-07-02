@@ -1,72 +1,86 @@
 {
   "$schema": "https://mintlify.com/docs.json",
-  "theme": "mint",
-  "name": "Mintlify Starter Kit",
+  "name": "FoundationKit",
+  "theme": "luma",
   "colors": {
-    "primary": "#16A34A",
-    "light": "#07C983",
-    "dark": "#15803D"
+    "primary": "#044c84"
   },
-  "favicon": "/favicon.svg",
-  "navigation": {
-    "pages": [
-      {
-        "group": "Getting Started",
-        "pages": [
-          "index",
-          "quickstart"
-        ]
-      }
-    ],
-    "global": {
-      "anchors": [
-        {
-          "anchor": "Documentation",
-          "href": "https://mintlify.com/docs",
-          "icon": "book-open-cover"
-        },
-        {
-          "anchor": "Blog",
-          "href": "https://mintlify.com/blog",
-          "icon": "newspaper"
-        }
-      ]
-    }
-  },
-  "logo": {
-    "light": "/logo/light.svg",
-    "dark": "/logo/dark.svg"
-  },
+  "favicon": "https://media.brand.dev/6431ecc0-4bf6-4385-aa6b-510768228ba5.png",
   "navbar": {
-    "links": [
-      {
-        "label": "Support",
-        "href": "mailto:hi@mintlify.com"
-      }
-    ],
     "primary": {
-      "type": "button",
-      "label": "Dashboard",
-      "href": "https://app.mintlify.com"
+      "type": "github",
+      "href": "https://github.com/Orbis25/FoundationKit"
     }
-  },
-  "contextual": {
-    "options": [
-      "copy",
-      "view",
-      "chatgpt",
-      "claude",
-      "perplexity",
-      "mcp",
-      "cursor",
-      "vscode"
-    ]
   },
   "footer": {
     "socials": {
-      "x": "https://x.com/mintlify",
-      "github": "https://github.com/mintlify",
-      "linkedin": "https://linkedin.com/company/mintlify"
+      "github": "https://github.com/Orbis25/FoundationKit"
     }
+  },
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "packages"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/base-models",
+              "concepts/repositories",
+              "concepts/dtos-and-pagination"
+            ]
+          },
+          {
+            "group": "Guides",
+            "pages": [
+              "guides/efcore-setup",
+              "guides/base-controllers",
+              "guides/encryption",
+              "guides/event-bus",
+              "guides/minimal-api-handlers"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Repository",
+            "pages": [
+              "api/ibase-repository",
+              "api/imap-repository",
+              "api/base-repository",
+              "api/map-repository"
+            ]
+          },
+          {
+            "group": "Domain",
+            "pages": [
+              "api/base-model",
+              "api/db-contexts",
+              "api/efcore-configuration",
+              "api/pagination"
+            ]
+          },
+          {
+            "group": "Extensions & Services",
+            "pages": [
+              "api/foundation-kit-extensions",
+              "api/encryptor-service",
+              "api/event-extensions"
+            ]
+          }
+        ]
+      }
+    ]
   }
 }

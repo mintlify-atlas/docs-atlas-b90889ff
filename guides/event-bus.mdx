@@ -1,0 +1,240 @@
+---
+title: "RabbitMQ Event Bus with FoundationKit Events"
+sidebarTitle: "Event Bus"
+description: "FoundationKit.Events wires up a RabbitMQ publisher, typed message handlers, and a background consumer service with automatic handler discovery in ASP.NET Core."
+---
+
+`FoundationKit.Events` provides a lightweight, convention-driven event bus on top of RabbitMQ. A single `AddEvents` call wires up the connection, declares the exchange, registers the `IRabbitMessageBroker` publisher, scans all loaded assemblies for `IMessageHandler<T>` implementations, and starts a background `RabbitMqConsumerService` that dispatches incoming messages to the right handler automatically — no manual consumer registration needed.
+
+## Setup
+
+Add the `FoundationKit.Events` NuGet package to your project, then call `AddEvents` in `Program.cs` with a configured `RabbitConfig`:
+
+**RabbitConfig fields:**
+
+| Property | Type | Default | Description |
+|---|---|---|---|
+| `Url` | `string?` | `null` | Full AMQP connection string (e.g. `amqp://user:pass@host:5672`). Takes priority over individual fields. |
+| `User` | `string?` | `"guest"` | RabbitMQ username (used when `Url` is not set) |
+| `Password` | `string?` | `"guest"` | RabbitMQ password |
+| `Host` | `string?` | `"localhost"` | RabbitMQ hostname |
+| `Port` | `int` | AMQP default | RabbitMQ port (5672) |
+| `DefaultExchange` | `string` | *(required)* | Exchange name where all messages are published |
+| `DefaultExchangeType` | `ExchangeType` | `Topic` | Exchange type: `Topic`, `Fanout`, `Direct`, or `Headers` |
+| `QueuePrefix` | `string` | *(required)* | Prefixed to every queue name: `{QueuePrefix}:{MessageTypeName}` |
+| `RedeliverUnackedMessages` | `bool` | `true` | If `true`, nacks unprocessed messages back to the queue for redelivery |
+
+```csharp
+// Program.cs
+using FoundationKit.Events.Extensions;
+using FoundationKit.Events.RabbitMQ.Config;
+
+builder.Services.AddEvents(new RabbitConfig
+{
+    Url             = Environment.GetEnvironmentVariable("RABBITMQ_URL"),
+    DefaultExchange = "my-app-exchange",
+    QueuePrefix     = "my-app",
+    DefaultExchangeType = ExchangeType.Topic,
+    RedeliverUnackedMessages = true
+});
+```
+
+When `Url` is provided it is used exclusively. When it is `null`, the library connects using `Host`, `Port`, `User`, and `Password`.
+
+## Defining a message
+
+A message is any class that implements the marker interface `IMessage`. No base class or extra properties are required:
+
+```csharp
+// Events/TestEvent.cs
+using FoundationKit.Events.RabbitMQ.Messages;
+
+public class TestEvent : IMessage
+{
+    public string? Name { get; set; }
+}
+```
+
+When published, the message is wrapped in an `EventMessage<T>` envelope that carries metadata:
+
+```csharp
+public sealed class EventMessage<T> : IEventMessage<T> where T : IMessage
+{
+    public string MessageId   { get; }   // unique message identifier
+    public string MessageName { get; }   // typeof(T).Name
+    public DateTime CreatedAt { get; }
+    public T Data             { get; }   // your message payload
+}
+```
+
+## Publishing
+
+Inject `IRabbitMessageBroker` and call `PublishAsync`. Both a single-message and a batch overload are available:
+
+```csharp
+public interface IRabbitMessageBroker
+{
+    Task PublishAsync<TMessage>(
+        TMessage message,
+        string? exchangeName = null,
+        string? routingKey   = null,
+        CancellationToken cancellationToken = default) where TMessage : IMessage;
+
+    Task PublishAsync<TMessage>(
+        IEnumerable<TMessage> messages,
+        string? exchangeName = null,
+        string? routingKey   = null,
+        CancellationToken cancellationToken = default) where TMessage : IMessage;
+}
+```
+
+**Single message — use the default exchange:**
+
+```csharp
+await _messageBroker.PublishAsync(new TestEvent { Name = "Jane Doe" });
+```
+
+**Batch publish to a specific exchange:**
+
+```csharp
+var events = new[]
+{
+    new TestEvent { Name = "Alice" },
+    new TestEvent { Name = "Bob" }
+};
+
+await _messageBroker.PublishAsync(events, exchangeName: "audit-exchange");
+```
+
+**Controller example from the sample project:**
+
+```csharp
+[HttpGet("test-events")]
+public async Task<IActionResult> TestEvents(
+    [FromServices] IRabbitMessageBroker messageBroker)
+{
+    await messageBroker.PublishAsync(new TestEvent { Name = "John Doe" });
+    return Ok();
+}
+```
+
+## Subscribing
+
+Tell FoundationKit which message types need a queue by calling `AddSubscriber<T>()` after `AddEvents`. A queue named `{QueuePrefix}:{TypeName}` is declared and bound to the default exchange with a routing key matching the type name:
+
+```csharp
+// Program.cs — after AddEvents(...)
+builder.Services.AddEvents(new RabbitConfig { ... });
+
+builder.Services.AddSubscriber<TestEvent>();
+// Declares queue: "my-app:TestEvent" bound to "my-app-exchange"
+```
+
+Pass an optional `exchange` argument to bind to a different exchange:
+
+```csharp
+builder.Services.AddSubscriber<TestEvent>(exchange: "audit-exchange");
+```
+
+## Consuming
+
+Implement `IMessageHandler<TMessage>` to process incoming messages. The interface declares a single method:
+
+```csharp
+public interface IMessageHandler<in TMessage> where TMessage : IMessage
+{
+    Task HandleAsync(TMessage message, CancellationToken cancellationToken = default);
+}
+```
+
+The background service auto-discovers all concrete `IMessageHandler<T>` implementations across loaded assemblies and invokes them when a matching message arrives:
+
+```csharp
+// Events/TestEventHandler.cs
+using FoundationKit.Events.RabbitMQ.Handlers;
+
+public class TestEventHandler : IMessageHandler<TestEvent>
+{
+    private readonly ILogger<TestEventHandler> _logger;
+
+    public TestEventHandler(ILogger<TestEventHandler> logger)
+    {
+        _logger = logger;
+    }
+
+    public async Task HandleAsync(TestEvent message, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            _logger.LogInformation("Received TestEvent: {Name}", message.Name);
+            // process the event...
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError("Error handling TestEvent: {Message}", ex.Message);
+            // re-throw to trigger a nack and optional redelivery
+            throw;
+        }
+    }
+}
+```
+
+<Note>
+`IMessageHandler<T>` implementations are discovered automatically at startup across all assemblies loaded into the current `AppDomain`, including referenced libraries. You do not need to register them manually — `AddEvents` calls `RegisterConsumers` internally, which scans assemblies and registers every handler with `AddScoped`.
+</Note>
+
+<Warning>
+If `HandleAsync` throws an unhandled exception the background service calls `BasicNackAsync`. When `RedeliverUnackedMessages` is `true` (the default), RabbitMQ requeues the message immediately, which can produce an infinite loop for messages that will never succeed. Always catch non-transient exceptions inside `HandleAsync` and log or dead-letter them instead of re-throwing.
+</Warning>
+
+## How it works
+
+`RabbitMqConsumerService` runs as an `IHostedService` (`BackgroundService`) for the lifetime of the application:
+
+<Steps>
+  <Step title="Channel setup">
+    Creates a new `IChannel` on startup and sets QoS to prefetch 10 messages (`BasicQosAsync(0, 10, false)`).
+  </Step>
+  <Step title="Queue and binding declaration">
+    For every `QueueDefinition` registered by `AddSubscriber<T>()`, the service calls `QueueDeclareAsync` (durable, non-exclusive, no auto-delete) and `QueueBindAsync` to link the queue to the exchange with the routing key.
+  </Step>
+  <Step title="Consumer registration">
+    Attaches an `AsyncEventingBasicConsumer` to each queue with `autoAck: false`.
+  </Step>
+  <Step title="Message dispatch">
+    On `ReceivedAsync`, deserialises the body as `EventMessage<T>` (the type is read from `BasicProperties.Type`), creates a DI scope, resolves the matching `IMessageHandler<T>`, and calls `HandleAsync`.
+  </Step>
+  <Step title="Acknowledgement">
+    On success calls `BasicAckAsync`. On exception calls `BasicNackAsync` with `requeue: RedeliverUnackedMessages`.
+  </Step>
+</Steps>
+
+**Full Program.cs example with all event bus pieces:**
+
+```csharp
+// Program.cs
+using FoundationKit.Events.Extensions;
+using FoundationKit.Events.RabbitMQ.Config;
+using FoundationKit.Events.RabbitMQ.ValueObjects;
+
+var builder = WebApplication.CreateBuilder(args);
+
+builder.Services.AddControllers();
+
+builder.Services.AddEvents(new RabbitConfig
+{
+    Url             = Environment.GetEnvironmentVariable("RABBITMQ_URL"),
+    DefaultExchange = "API-EXAMPLE-EXCHANGE",
+    QueuePrefix     = "API-EXAMPLE",
+    DefaultExchangeType      = ExchangeType.Topic,
+    RedeliverUnackedMessages = true
+});
+
+// Register queue bindings for each message type you want to consume
+builder.Services.AddSubscriber<TestEvent>();
+
+var app = builder.Build();
+
+app.MapControllers();
+app.Run();
+```

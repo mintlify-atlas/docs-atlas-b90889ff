@@ -1,0 +1,232 @@
+---
+title: "FoundationKitDbContext and FoundationKitIdentityDbContext"
+sidebarTitle: "DbContexts"
+description: "Abstract EF Core DbContext base classes that automatically set CreatedAt and UpdatedAt on every SaveChanges call. Choose the Identity variant for apps using ASP.NET Core Identity."
+---
+
+FoundationKit ships two abstract EF Core `DbContext` base classes that take care of the most repetitive concern in any data layer: keeping `CreatedAt` and `UpdatedAt` accurate on every save operation. Both classes intercept `SaveChanges` and `SaveChangesAsync`, walk the change tracker for any entities that derive from `BaseModel`, and stamp the correct timestamp — either local time or UTC — depending on a single application-wide flag. You pick the right class based on whether your application also uses ASP.NET Core Identity.
+
+---
+
+## FoundationKitDbContext
+
+`FoundationKitDbContext` is an abstract class that extends EF Core's `DbContext`. Inherit from it when your application does **not** use ASP.NET Core Identity.
+
+```csharp
+public abstract class FoundationKitDbContext(DbContextOptions options)
+    : DbContext(options)
+{
+    public override Task<int> SaveChangesAsync(
+        CancellationToken cancellationToken = default)
+    {
+        foreach (var entity in ChangeTracker.Entries<BaseModel>())
+        {
+            switch (entity.State)
+            {
+                case EntityState.Modified:
+                    entity.Entity.UpdatedAt = FoundationKitStaticOptions.DateUtc
+                        ? DateTime.UtcNow
+                        : DateTime.Now;
+                    break;
+                case EntityState.Added:
+                    entity.Entity.CreatedAt = FoundationKitStaticOptions.DateUtc
+                        ? DateTime.UtcNow
+                        : DateTime.Now;
+                    break;
+            }
+        }
+
+        return base.SaveChangesAsync(cancellationToken);
+    }
+
+    public override int SaveChanges()
+    {
+        foreach (var entity in ChangeTracker.Entries<BaseModel>())
+        {
+            switch (entity.State)
+            {
+                case EntityState.Modified:
+                    entity.Entity.UpdatedAt = FoundationKitStaticOptions.DateUtc
+                        ? DateTime.UtcNow
+                        : DateTime.Now;
+                    break;
+                case EntityState.Added:
+                    entity.Entity.CreatedAt = FoundationKitStaticOptions.DateUtc
+                        ? DateTime.UtcNow
+                        : DateTime.Now;
+                    break;
+            }
+        }
+
+        return base.SaveChanges();
+    }
+}
+```
+
+### Behaviour summary
+
+| Entity state   | Field set    | Value                                          |
+|----------------|--------------|------------------------------------------------|
+| `Added`        | `CreatedAt`  | `DateTime.UtcNow` or `DateTime.Now`            |
+| `Modified`     | `UpdatedAt`  | `DateTime.UtcNow` or `DateTime.Now`            |
+| Any other state | *(nothing)* | —                                              |
+
+Only entities whose runtime type is assignable to `BaseModel` are affected. Plain EF Core entities that do not inherit from `BaseModel` are untouched.
+
+### Defining your application DbContext
+
+```csharp
+using FoundationKit.Domain.Persistence;
+
+public class AppDbContext(DbContextOptions<AppDbContext> options)
+    : FoundationKitDbContext(options)
+{
+    public DbSet<Order>   Orders   { get; set; } = default!;
+    public DbSet<Product> Products { get; set; } = default!;
+
+    protected override void OnModelCreating(ModelBuilder modelBuilder)
+    {
+        base.OnModelCreating(modelBuilder);
+        modelBuilder.ApplyConfigurationsFromAssembly(typeof(AppDbContext).Assembly);
+    }
+}
+```
+
+### Registration in Program.cs
+
+```csharp
+builder.Services.AddDbContext<AppDbContext>(options =>
+    options.UseSqlServer(builder.Configuration.GetConnectionString("Default")));
+```
+
+---
+
+## FoundationKitIdentityDbContext\<TUser\>
+
+`FoundationKitIdentityDbContext<TUser>` provides identical timestamp automation but inherits from `IdentityDbContext<TUser>` instead of plain `DbContext`. Use this variant when your application authenticates users through ASP.NET Core Identity.
+
+```csharp
+public abstract class FoundationKitIdentityDbContext<TUser>(DbContextOptions options)
+    : IdentityDbContext<TUser>(options)
+    where TUser : IdentityUser
+{
+    // SaveChangesAsync and SaveChanges — identical timestamp logic as above
+}
+```
+
+The generic parameter `TUser` is constrained to `IdentityUser`, meaning you can pass either the built-in `IdentityUser` or your own extended user class.
+
+### Defining your Identity-aware application DbContext
+
+```csharp
+using FoundationKit.Domain.Persistence;
+using Microsoft.AspNetCore.Identity;
+
+// Custom user class (optional — use IdentityUser directly if no extra fields)
+public class ApplicationUser : IdentityUser
+{
+    public string? DisplayName { get; set; }
+}
+
+public class AppDbContext(DbContextOptions<AppDbContext> options)
+    : FoundationKitIdentityDbContext<ApplicationUser>(options)
+{
+    public DbSet<Order> Orders { get; set; } = default!;
+
+    protected override void OnModelCreating(ModelBuilder modelBuilder)
+    {
+        base.OnModelCreating(modelBuilder);
+        modelBuilder.ApplyConfigurationsFromAssembly(typeof(AppDbContext).Assembly);
+    }
+}
+```
+
+### Registration in Program.cs
+
+```csharp
+builder.Services.AddDbContext<AppDbContext>(options =>
+    options.UseSqlServer(builder.Configuration.GetConnectionString("Default")));
+
+builder.Services
+    .AddIdentity<ApplicationUser, IdentityRole>()
+    .AddEntityFrameworkStores<AppDbContext>()
+    .AddDefaultTokenProviders();
+```
+
+---
+
+## FoundationKitStaticOptions
+
+`FoundationKitStaticOptions` is a lightweight static class that controls global behaviour shared across both context implementations.
+
+```csharp
+namespace FoundationKit.Domain.Option;
+
+public static class FoundationKitStaticOptions
+{
+    public static bool DateUtc { get; set; }
+}
+```
+
+<ResponseField name="DateUtc" type="bool">
+  When `false` (the default), both `FoundationKitDbContext` and
+  `FoundationKitIdentityDbContext` use `DateTime.Now` (local server time).
+  When `true`, they use `DateTime.UtcNow`. Set this flag once at application
+  startup, before any database operations are performed.
+</ResponseField>
+
+### Setting DateUtc in Program.cs
+
+```csharp
+using FoundationKit.Domain.Option;
+
+// Set before building the app or registering services that use the DbContext
+FoundationKitStaticOptions.DateUtc = true;
+
+var builder = WebApplication.CreateBuilder(args);
+// ... service registration ...
+var app = builder.Build();
+app.Run();
+```
+
+<Note>
+  Set `DateUtc` consistently across every entry point in your application
+  (web host, worker services, migration tooling, integration tests). Mixing
+  local and UTC timestamps in the same table will produce ordering and
+  comparison bugs that are difficult to diagnose. If your deployment
+  environment spans multiple time zones or runs in containers, prefer
+  `DateUtc = true`.
+</Note>
+
+---
+
+## Which context should I use?
+
+<CodeGroup>
+
+```csharp Without Identity
+// FoundationKitDbContext — no ASP.NET Core Identity
+public class AppDbContext(DbContextOptions<AppDbContext> options)
+    : FoundationKitDbContext(options)
+{
+    public DbSet<Order> Orders { get; set; } = default!;
+}
+```
+
+```csharp With Identity
+// FoundationKitIdentityDbContext — with ASP.NET Core Identity
+public class AppDbContext(DbContextOptions<AppDbContext> options)
+    : FoundationKitIdentityDbContext<ApplicationUser>(options)
+{
+    public DbSet<Order> Orders { get; set; } = default!;
+}
+```
+
+</CodeGroup>
+
+<Tip>
+  Both base classes are `abstract`, so you can never accidentally register them
+  directly as the `DbContext` type. EF Core will always use your concrete
+  subclass, which means `DbContextOptions<YourAppDbContext>` resolves correctly
+  through dependency injection.
+</Tip>

@@ -1,0 +1,221 @@
+---
+title: "Encrypting Data with FoundationKit: AES and TweetNaCl"
+sidebarTitle: "Encryption"
+description: "FoundationKit provides AES symmetric encryption and TweetNaCl/Curve25519 asymmetric encryption via IEncryptorService, plus a request-body decryption middleware."
+---
+
+FoundationKit bundles two encryption modes behind a single `IEncryptorService` abstraction. The **TweetNaCl / Curve25519** mode (`EncryptCore` / `DecryptCore`) provides asymmetric, authenticated encryption suitable for key exchange and encrypting AES configs sent from clients. The **AES-CBC** mode (`AESEncrypt` / `AESDecrypt`) handles bulk data encryption once both sides have agreed on a key and IV. A purpose-built middleware (`FoundationKitAesEncryptorMiddleware`) uses both together: the client sends an AES config encrypted with TweetNaCl in a request header, and the middleware decrypts the request body transparently before controllers see it.
+
+## Setup
+
+Register `IEncryptorService` by calling `AddFoundationKitEncryptor` in `Program.cs` and providing an `EncryptorOption` instance.
+
+**EncryptorOption fields:**
+
+| Property | Type | Description |
+|---|---|---|
+| `PublicKey` | `string?` | Base64-encoded Curve25519 public key |
+| `PrivateKey` | `string?` | Base64-encoded Curve25519 private key |
+| `Enconding` | `Encoding?` | Text encoding used during encryption/decryption (defaults to `UTF-8`) |
+| `HeaderAes` | `string?` | HTTP header name that carries the TweetNaCl-encrypted AES config (e.g. `"AES"`) |
+
+<Warning>
+Never commit your `PrivateKey` to source control. Store it in environment variables, Azure Key Vault, AWS Secrets Manager, or any secret management system. The `PublicKey` can be shared with clients, but the `PrivateKey` must remain server-side only.
+</Warning>
+
+```csharp
+// Program.cs
+builder.Services.AddFoundationKitEncryptor(new EncryptorOption
+{
+    PublicKey  = Environment.GetEnvironmentVariable("FK_PUBLIC_KEY"),
+    PrivateKey = Environment.GetEnvironmentVariable("FK_PRIVATE_KEY"),
+    HeaderAes  = "AES"   // clients send the encrypted AES config in this header
+});
+```
+
+By default `IEncryptorService` is registered with `ServiceLifetime.Scoped`. Pass a different `ServiceLifetime` as the second argument if needed:
+
+```csharp
+builder.Services.AddFoundationKitEncryptor(options, ServiceLifetime.Singleton);
+```
+
+## IEncryptorService methods
+
+Inject `IEncryptorService` anywhere in your application:
+
+```csharp
+public class MyService
+{
+    private readonly IEncryptorService _encryptor;
+
+    public MyService(IEncryptorService encryptor)
+    {
+        _encryptor = encryptor;
+    }
+}
+```
+
+### TweetNaCl / Curve25519 encryption
+
+```csharp
+// Serialize obj to JSON, encrypt with CryptoBoxAfternm, return base64 string
+string cipherText = _encryptor.EncryptCore<MyPayload>(payload);
+
+// Decrypt base64 string back to T (uses configured public/private key pair)
+MyPayload? result = _encryptor.DecryptCore<MyPayload>(cipherText);
+```
+
+Override keys per call by passing optional `pbKey` / `pvKey` arguments:
+
+```csharp
+string cipher = _encryptor.EncryptCore(payload, pbKey: base64PublicKey, pvKey: base64PrivateKey);
+```
+
+<Note>
+TweetNaCl key pairs are 32-byte Curve25519 keys. To generate a pair, use the `TweetNaCl.Sharpen` library directly: `TweetNaCl.CryptoBoxKeypair(out byte[] publicKey, out byte[] privateKey)`. Store both as base64 strings in your secret store. The service uses `CryptoBoxBeforenm` to compute a shared key, so both sides must hold the same key pair or perform a proper key exchange first.
+</Note>
+
+### AES-CBC encryption
+
+```csharp
+var config = new AesConfig
+{
+    Key = base64AesKey,   // base64-encoded 16, 24, or 32-byte AES key
+    Iv  = base64AesIv     // base64-encoded 16-byte initialization vector
+};
+
+// Encrypt: serialize T to JSON, AES-CBC encrypt, return base64 string
+string encrypted = _encryptor.AESEncrypt<MyPayload>(payload, config);
+
+// Decrypt to strongly typed T
+MyPayload? decrypted = _encryptor.AESDecrypt<MyPayload>(encrypted, config);
+
+// Decrypt to raw JSON string
+string? json = _encryptor.AESDecrypt(encrypted, config);
+```
+
+## AesConfig
+
+`AesConfig` carries the symmetric key material for a single AES operation:
+
+```csharp
+public class AesConfig
+{
+    public string? Key { get; set; }   // base64-encoded AES key (128, 192, or 256-bit)
+    public string? Iv  { get; set; }   // base64-encoded 16-byte IV
+}
+```
+
+**Generating a fresh AesConfig at runtime:**
+
+```csharp
+using var aes = Aes.Create();
+
+var config = new AesConfig
+{
+    Key = Convert.ToBase64String(aes.Key),
+    Iv  = Convert.ToBase64String(aes.IV)
+};
+
+// Encrypt the config with TweetNaCl so only the server can read it:
+string encryptedConfig = _encryptor.EncryptCore(config);
+```
+
+The client then sends `encryptedConfig` in the configured HTTP header on every request, and the server decrypts it to retrieve `Key` and `Iv` for the request body.
+
+## AES Middleware
+
+`FoundationKitAesEncryptorMiddleware` integrates the two-layer encryption scheme into the ASP.NET Core pipeline. On every request it:
+
+<Steps>
+  <Step title="Read the AES config header">
+    Reads the HTTP header named by `EncryptorOption.HeaderAes` (e.g. `AES`). Returns `401` if absent.
+  </Step>
+  <Step title="Decrypt the AES config">
+    Calls `DecryptCore<AesConfig>` on the header value to recover the `AesConfig`. Returns `401` if decryption fails.
+  </Step>
+  <Step title="Decrypt the request body">
+    Deserializes the body as `RequestAesBase` (expects a `{ "Data": "<base64>" }` envelope), then calls `AESDecrypt` with the recovered config. Returns `400` if the body is missing or malformed.
+  </Step>
+  <Step title="Replace the body stream">
+    Writes the decrypted JSON back to `context.Request.Body` so downstream controllers receive a plain JSON body.
+  </Step>
+</Steps>
+
+Register the middleware **after** `UseRouting` and before `MapControllers`:
+
+```csharp
+// Program.cs
+using Foundationkit.Middlewares;
+
+var app = builder.Build();
+
+app.UseHttpsRedirection();
+app.UseRouting();
+
+// Decrypt every request body using AES config from the header
+app.UseMiddleware<FoundationKitAesEncryptorMiddleware>();
+
+app.MapControllers();
+app.Run();
+```
+
+The request body the client sends must conform to `RequestAesBase`:
+
+```json
+{
+  "Data": "<base64-encoded AES-encrypted payload>"
+}
+```
+
+## Controller helper — AesOk\<T\>
+
+`EncryptorHelper.AesOk<T>` is an extension method on `ControllerBase` that encrypts your response object using the same AES config the client sent in the request header, and wraps it in a `RequestAesBase` envelope:
+
+```csharp
+// Reads the AES header, decrypts it to get AesConfig,
+// encrypts `response` with that config, returns 200 OK
+return this.AesOk(response);
+```
+
+Returns `401 Unauthorized` if the header is missing or cannot be decrypted, `400 Bad Request` if encryption fails, and `200 OK` with the body `{ "Data": "<base64>" }` on success.
+
+**Real-world usage from PeopleController:**
+
+```csharp
+[HttpPost("/decrypt")]
+public async Task<IActionResult> Decrypt([FromBody] AesConfig config)
+{
+    // Encrypt the config object and return it as an AES-encrypted response
+    return this.AesOk(config);
+}
+```
+
+## Low-level helpers — AesEncrytionHelper
+
+`AesEncrytionHelper` (in `Foundationkit.Extensions.Encryptions.AES`) provides static methods for direct byte-level AES operations:
+
+| Method | Signature | Description |
+|---|---|---|
+| `EncryptStringToBytesAes` | `(string plainText, byte[] key, byte[] iv) → byte[]` | AES-CBC encrypt plain text to cipher bytes |
+| `DecryptStringFromBytesAes` | `(byte[] cipherText, byte[] key, byte[] iv) → string` | AES-CBC decrypt cipher bytes to plain text |
+| `EncryptECB` | `(string plainText, byte[] key) → byte[]` | AES-ECB encrypt (128-bit key, PKCS7 padding) |
+| `DencryptECB` | `(byte[] cipherText, byte[] key) → string` | AES-ECB decrypt |
+| `HexStringToByteArray` | `(string hex) → byte[]` | Convert hex string (e.g. `"AABBCC"`) to byte array |
+
+```csharp
+// CBC example — use IEncryptorService for high-level operations
+byte[] key = Convert.FromBase64String(config.Key!);
+byte[] iv  = Convert.FromBase64String(config.Iv!);
+
+byte[] cipher    = AesEncrytionHelper.EncryptStringToBytesAes("hello world", key, iv);
+string plaintext = AesEncrytionHelper.DecryptStringFromBytesAes(cipher, key, iv);
+
+// ECB example (legacy systems only — ECB mode is not semantically secure)
+byte[] ecbCipher = AesEncrytionHelper.EncryptECB("hello", key);
+string ecbPlain  = AesEncrytionHelper.DencryptECB(ecbCipher, key);
+```
+
+<Warning>
+`EncryptECB` and `DencryptECB` use `CipherMode.ECB`, which does not provide semantic security for structured data. Prefer the AES-CBC methods (`EncryptStringToBytesAes`) for new integrations, and use ECB only when required by a third-party system.
+</Warning>

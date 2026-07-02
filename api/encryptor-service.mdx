@@ -1,0 +1,306 @@
+---
+title: "IEncryptorService — Encryption and Decryption API"
+sidebarTitle: "IEncryptorService"
+description: "IEncryptorService provides TweetNaCl/Curve25519 asymmetric encryption and AES symmetric encryption methods, plus a controller extension for encrypted HTTP responses."
+---
+
+`IEncryptorService` is the central encryption abstraction in FoundationKit. It exposes two complementary encryption strategies: **TweetNaCl/Curve25519 asymmetric encryption** (via `CryptoBoxAfternm`) for protecting small payloads such as per-request AES configurations, and **AES-CBC symmetric encryption** for efficiently encrypting larger request and response bodies. Register it via [`AddFoundationKitEncryptor`](/api/foundation-kit-extensions#addfoundationkitencryptor) and inject it wherever encryption or decryption is required.
+
+---
+
+## Interface members
+
+### HeaderAes
+
+```csharp
+string? HeaderAes { get; }
+```
+
+The HTTP request-header name that carries the AES configuration for a given request. Its value is sourced directly from `EncryptorOption.HeaderAes` at construction time. Both `EncryptorHelper.AesOk` and `FoundationKitAesEncryptorMiddleware` read this property to locate the correct header.
+
+<ResponseField name="HeaderAes" type="string?">
+  The header name (e.g. `"x-aes-config"`) that clients must set on every request when using AES-encrypted endpoints. `null` if the option was not configured.
+</ResponseField>
+
+---
+
+### EncryptCore\<T\>
+
+Serializes an object to JSON and encrypts it using the **TweetNaCl `CryptoBoxAfternm`** algorithm (Curve25519 + XSalsa20-Poly1305). The output is a single base64 string that contains the 24-byte random nonce prepended to the ciphertext.
+
+```csharp
+string EncryptCore<T>(T? obj, string? pbKey = null, string? pvKey = null)
+```
+
+<ParamField path="obj" type="T?" required>
+  The object to encrypt. Returns an empty string immediately if `null`.
+</ParamField>
+
+<ParamField path="pbKey" type="string?" default="null">
+  Base64-encoded Curve25519 public key. When omitted, falls back to `EncryptorOption.PublicKey`.
+</ParamField>
+
+<ParamField path="pvKey" type="string?" default="null">
+  Base64-encoded Curve25519 private key. When omitted, falls back to `EncryptorOption.PrivateKey`.
+</ParamField>
+
+**Returns** `string` — a base64-encoded payload structured as `[24-byte nonce | ciphertext]`.
+
+**Throws** `ArgumentNullException` if both the call-site key and the corresponding option key are null or empty.
+
+```csharp
+// Encrypt an AES config to send as a request header
+var aesConfig = new AesConfig { Key = "BASE64_KEY", Iv = "BASE64_IV" };
+string encrypted = encryptorService.EncryptCore(aesConfig);
+```
+
+---
+
+### DecryptCore\<T\>
+
+Decrypts a base64 ciphertext previously produced by `EncryptCore` and deserializes the result to `T`. The first 24 bytes of the decoded payload are treated as the nonce; the remainder is the TweetNaCl ciphertext.
+
+```csharp
+T? DecryptCore<T>(string? cipherText, string? pbKey = null, string? pvKey = null)
+```
+
+<ParamField path="cipherText" type="string?" required>
+  The base64-encoded ciphertext returned by `EncryptCore`. Returns `default(T)` immediately if `null` or empty.
+</ParamField>
+
+<ParamField path="pbKey" type="string?" default="null">
+  Base64-encoded Curve25519 public key override. Falls back to `EncryptorOption.PublicKey` when omitted.
+</ParamField>
+
+<ParamField path="pvKey" type="string?" default="null">
+  Base64-encoded Curve25519 private key override. Falls back to `EncryptorOption.PrivateKey` when omitted.
+</ParamField>
+
+**Returns** `T?` — the deserialized object, or `null` / `default` if the input is empty.
+
+**Throws** `ArgumentNullException` if both the call-site key and the option key are null or empty.
+
+```csharp
+// Read the encrypted header and recover the AES config
+string headerValue = Request.Headers["x-aes-config"].ToString();
+AesConfig? config = encryptorService.DecryptCore<AesConfig>(headerValue);
+```
+
+---
+
+### AESEncrypt\<T\>
+
+Serializes an object to JSON and encrypts it with **AES-CBC** using the key and IV from the supplied `AesConfig`. The result is a base64-encoded ciphertext suitable for transmission in an HTTP body.
+
+```csharp
+string AESEncrypt<T>(T? obj, AesConfig config)
+```
+
+<ParamField path="obj" type="T?" required>
+  The object to encrypt. Returns an empty string immediately if `null`.
+</ParamField>
+
+<ParamField path="config" type="AesConfig" required>
+  AES key and initialization vector. Both `Key` and `Iv` must be non-null base64 strings; otherwise an `ArgumentNullException` is thrown.
+</ParamField>
+
+**Returns** `string` — base64-encoded AES ciphertext, or an empty string if an internal error occurs (the exception is written to `Console`).
+
+```csharp
+var payload = new OrderDto { Id = 42, Total = 99.99m };
+string cipherText = encryptorService.AESEncrypt(payload, aesConfig);
+```
+
+---
+
+### AESDecrypt\<T\> (typed)
+
+Decrypts a base64 AES ciphertext and deserializes the resulting JSON to `T`.
+
+```csharp
+T? AESDecrypt<T>(string data, AesConfig config)
+```
+
+<ParamField path="data" type="string" required>
+  Base64-encoded AES ciphertext, as produced by `AESEncrypt`.
+</ParamField>
+
+<ParamField path="config" type="AesConfig" required>
+  The same `AesConfig` (key + IV) used when encrypting. Key and IV must not be null or empty.
+</ParamField>
+
+**Returns** `T?` — the deserialized object, or `default` if the decrypted JSON is empty or an error occurs.
+
+```csharp
+OrderDto? order = encryptorService.AESDecrypt<OrderDto>(cipherText, aesConfig);
+```
+
+---
+
+### AESDecrypt (string)
+
+Decrypts a base64 AES ciphertext and returns the raw plain-text string without further deserialization. Useful when the caller needs to process the JSON manually or forward the decrypted body.
+
+```csharp
+string? AESDecrypt(string data, AesConfig config)
+```
+
+<ParamField path="data" type="string" required>
+  Base64-encoded AES ciphertext.
+</ParamField>
+
+<ParamField path="config" type="AesConfig" required>
+  AES key and IV configuration.
+</ParamField>
+
+**Returns** `string?` — the decrypted plain-text string, or `null` if the result is empty or an error occurs.
+
+```csharp
+string? json = encryptorService.AESDecrypt(requestBody, aesConfig);
+```
+
+---
+
+## Supporting types
+
+### AesConfig
+
+Carries the AES key and initialization vector for a single encrypt/decrypt operation. Clients typically generate a fresh `AesConfig` per request, encrypt it with `EncryptCore`, and transmit it in the `HeaderAes` request header.
+
+```csharp
+public class AesConfig
+{
+    public string? Key { get; set; }
+    public string? Iv  { get; set; }
+}
+```
+
+<ResponseField name="Key" type="string?">
+  Base64-encoded AES key bytes. Passed through `Convert.FromBase64String` before use; must be a valid AES key length (16, 24, or 32 bytes when decoded).
+</ResponseField>
+
+<ResponseField name="Iv" type="string?">
+  Base64-encoded AES initialization vector (16 bytes when decoded for AES-CBC).
+</ResponseField>
+
+---
+
+### RequestAesBase
+
+The standard HTTP request/response body wrapper for AES-encrypted endpoints. Both the middleware and `AesOk` use this class: the middleware expects an incoming body of this shape and replaces it with the decrypted content; `AesOk` wraps the encrypted response in this class before returning `200 OK`.
+
+```csharp
+public class RequestAesBase
+{
+    public string? Data { get; set; }
+}
+```
+
+<ResponseField name="Data" type="string?">
+  The base64-encoded AES ciphertext that represents the actual request or response payload.
+</ResponseField>
+
+---
+
+## EncryptorHelper.AesOk
+
+A `ControllerBase` extension method that handles the full **encrypt-on-send** flow in a single call. It reads the `HeaderAes` header from the current request, uses `DecryptCore` to recover the `AesConfig`, encrypts the response object with `AESEncrypt`, and returns a `200 OK` with a `RequestAesBase` body.
+
+```csharp
+public static IActionResult AesOk<T>(this ControllerBase controller, T? obj)
+```
+
+<ParamField path="controller" type="ControllerBase" required>
+  The MVC controller making the response. Used to resolve `IEncryptorService` from the DI container and to read the request headers.
+</ParamField>
+
+<ParamField path="obj" type="T?" required>
+  The response object to encrypt. Throws `ArgumentNullException` if `null`.
+</ParamField>
+
+**Returns** one of:
+
+| Result | Condition |
+|---|---|
+| `200 OK` with `RequestAesBase { Data = "<cipherText>" }` | Header present, decryption succeeded, and AES encryption produced a non-empty result. |
+| `401 Unauthorized` | `HeaderAes` header is missing or `DecryptCore` returns `null`. |
+| `400 Bad Request` | AES encryption returned an empty string. |
+
+```csharp
+using FoundationKit.Helpers.Encryptor;
+
+[HttpGet("order/{id}")]
+public IActionResult GetOrder(int id)
+{
+    var order = _orderService.Find(id);
+    return this.AesOk(order); // encrypts and returns 200
+}
+```
+
+<Note>
+  `AesOk` calls `controller.HttpContext.RequestServices.GetRequiredService<IEncryptorService>()` internally, so `IEncryptorService` must be registered (via `AddFoundationKitEncryptor`) before using this helper.
+</Note>
+
+---
+
+## FoundationKitAesEncryptorMiddleware
+
+An ASP.NET Core middleware that transparently **decrypts incoming request bodies** before the request reaches your controllers or minimal-API handlers. Register it with `app.UseMiddleware<FoundationKitAesEncryptorMiddleware>()`.
+
+### Request flow
+
+1. **Read the `HeaderAes` header.** If absent → `401 Unauthorized`.
+2. **Decrypt the header value** with `DecryptCore<AesConfig>`. If decryption fails → `401 Unauthorized`.
+3. **Read the request body** and deserialize it as `RequestAesBase`. If `Data` is null or empty → `400 Bad Request`.
+4. **Decrypt `Data`** with `AESDecrypt(string)` using the recovered `AesConfig`. If decryption returns `null` → `400 Bad Request`.
+5. **Replace `HttpContext.Request.Body`** with a new `MemoryStream` containing the decrypted JSON bytes (UTF-8).
+6. **Pass control** to the next middleware/handler with `await _next(context)`.
+
+```csharp
+// Program.cs — register before routing/controllers
+app.UseMiddleware<FoundationKitAesEncryptorMiddleware>();
+app.MapControllers();
+```
+
+<Warning>
+  The middleware replaces the entire request body stream. Ensure that any middleware further up the pipeline that also reads the body (e.g. request logging) is placed **before** `FoundationKitAesEncryptorMiddleware`, or enable request body buffering with `app.Use(async (ctx, next) => { ctx.Request.EnableBuffering(); await next(); })`.
+</Warning>
+
+### Middleware + controller pattern
+
+<CodeGroup>
+
+```csharp Program.cs
+builder.Services.AddFoundationKitEncryptor(new EncryptorOption
+{
+    PublicKey  = "BASE64_PUBLIC_KEY",
+    PrivateKey = "BASE64_PRIVATE_KEY",
+    HeaderAes  = "x-aes-config"
+});
+
+var app = builder.Build();
+app.UseMiddleware<FoundationKitAesEncryptorMiddleware>();
+app.MapControllers();
+app.Run();
+```
+
+```csharp OrderController.cs
+[ApiController]
+[Route("api/[controller]")]
+public class OrderController : ControllerBase
+{
+    private readonly IOrderService _orders;
+
+    public OrderController(IOrderService orders) => _orders = orders;
+
+    // Middleware already decrypted the body; bind normally
+    [HttpPost]
+    public IActionResult Create([FromBody] CreateOrderRequest req)
+    {
+        var result = _orders.Create(req);
+        return this.AesOk(result); // encrypt the response
+    }
+}
+```
+
+</CodeGroup>

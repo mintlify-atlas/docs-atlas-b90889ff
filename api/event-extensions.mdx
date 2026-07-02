@@ -1,0 +1,446 @@
+---
+title: "Event Bus API: IRabbitMessageBroker, IMessageHandler, and EventExtensions"
+sidebarTitle: "Event Extensions"
+description: "Complete API reference for FoundationKit.Events: the AddEvents and AddSubscriber DI extensions, IRabbitMessageBroker publisher, IMessageHandler consumer interface, and message types."
+---
+
+`FoundationKit.Events` provides a first-class RabbitMQ event bus built on top of the official `RabbitMQ.Client` library. It covers the full publish/subscribe lifecycle: a fluent DI setup that connects to the broker at startup, an `IRabbitMessageBroker` service for publishing typed messages, an `IMessageHandler<T>` interface for consuming them, and an automatic background service that wires consumers to their queues. All message types, exchange topology, and handler registrations are discovered at startup with zero boilerplate.
+
+---
+
+## EventExtensions
+
+Located in `FoundationKit.Events.Extensions`, this static class exposes the two `IServiceCollection` extension methods used to configure the event bus.
+
+### AddEvents
+
+Connects to RabbitMQ, declares the default exchange, registers the broker and topology infrastructure, auto-discovers all `IMessageHandler<T>` implementations in every loaded assembly, and starts the consumer background service.
+
+```csharp
+public static IServiceCollection AddEvents(
+    this IServiceCollection services,
+    RabbitConfig configuration)
+```
+
+**Returns** `IServiceCollection` (fluent).
+
+<ParamField path="services" type="IServiceCollection" required>
+  The application's service collection, typically `builder.Services`.
+</ParamField>
+
+<ParamField path="configuration" type="RabbitConfig" required>
+  Connection details and exchange/queue settings. See [RabbitConfig](#rabbitconfig) for all fields.
+</ParamField>
+
+Internally `AddEvents`:
+1. Creates a `ConnectionFactory` (using `Url` if set, otherwise `Host`, `User`, `Password`, `Port`).
+2. Opens an `IConnection` and an `IChannel` and registers both as singletons.
+3. Registers `RabbitConfig` and `RabbitTopologyRegistry` as singletons.
+4. Registers `IRabbitMessageBroker` → `RabbitMessageBroker` as scoped.
+5. Calls `ExchangeDeclareAsync` with `DefaultExchange` and `DefaultExchangeType`.
+6. Scans **all loaded assemblies** (including those listed in the runtime dependency context) for concrete classes that implement a closed generic of `IMessageHandler<>`, and registers each one as scoped.
+7. Starts `RabbitMqConsumerService` as a hosted background service.
+
+```csharp
+// Program.cs
+builder.Services.AddEvents(new RabbitConfig
+{
+    Host            = "localhost",
+    User            = "guest",
+    Password        = "guest",
+    Port            = 5672,
+    DefaultExchange = "my-app.events",
+    QueuePrefix     = "my-app"
+});
+```
+
+---
+
+### AddSubscriber\<T\>
+
+Registers a `QueueDefinition` that binds the queue for message type `T` to an exchange. Call this once per message type your application consumes, after `AddEvents`.
+
+```csharp
+public static IServiceCollection AddSubscriber<T>(
+    this IServiceCollection services,
+    string? exchange = null)
+    where T : IMessage
+```
+
+**Returns** `IServiceCollection` (fluent).
+
+<ParamField path="services" type="IServiceCollection" required>
+  The application's service collection.
+</ParamField>
+
+<ParamField path="exchange" type="string?" default="null">
+  The exchange to bind to. When `null` or empty, `RabbitConfig.DefaultExchange` is used.
+</ParamField>
+
+<ParamField path="T" type="generic : IMessage" required>
+  The message type to subscribe to. The resulting queue name is `"{QueuePrefix}:{typeof(T).Name}"` — for example, `"my-app:OrderCreated"`.
+</ParamField>
+
+```csharp
+builder.Services.AddEvents(rabbitConfig);
+
+// Subscribe to specific message types
+builder.Services.AddSubscriber<OrderCreated>();
+builder.Services.AddSubscriber<PaymentReceived>(exchange: "payments.events");
+```
+
+<Note>
+  `AddSubscriber` registers each `QueueDefinition` as a singleton using a factory delegate that resolves `RabbitConfig` from the container, so `AddEvents` (which registers `RabbitConfig`) must be called first.
+</Note>
+
+---
+
+## RabbitConfig
+
+Carries all connection and topology settings passed to `AddEvents`.
+
+```csharp
+public class RabbitConfig
+{
+    public string? User            { get; set; }
+    public string? Password        { get; set; }
+    public string? Host            { get; set; }
+    public int     Port            { get; set; }
+    public string? Url             { get; set; }
+    public required string DefaultExchange     { get; set; }
+    public ExchangeType    DefaultExchangeType { get; set; } = ExchangeType.Topic;
+    public bool    RedeliverUnackedMessages    { get; set; } = true;
+    public required string QueuePrefix         { get; set; }
+}
+```
+
+<ParamField path="User" type="string?" default="guest">
+  RabbitMQ username. Ignored when `Url` is set.
+</ParamField>
+
+<ParamField path="Password" type="string?" default="guest">
+  RabbitMQ password. Ignored when `Url` is set.
+</ParamField>
+
+<ParamField path="Host" type="string?" default="localhost">
+  RabbitMQ host name or IP address. Ignored when `Url` is set.
+</ParamField>
+
+<ParamField path="Port" type="int" default="AmqpTcpEndpoint.UseDefaultPort (5672)">
+  AMQP port. `0` means use the default port. Ignored when `Url` is set.
+</ParamField>
+
+<ParamField path="Url" type="string?">
+  Full AMQP URI (e.g. `"amqps://user:pass@host:5671/vhost"`). When non-empty, takes priority over `Host`, `User`, `Password`, and `Port`.
+</ParamField>
+
+<ParamField path="DefaultExchange" type="string" required>
+  Name of the exchange that `AddEvents` will declare and that `IRabbitMessageBroker` will publish to by default. Must not be null or empty.
+</ParamField>
+
+<ParamField path="DefaultExchangeType" type="ExchangeType" default="ExchangeType.Topic">
+  Exchange type used when declaring `DefaultExchange`. Supported values:
+
+  | Value | Wire name |
+  |---|---|
+  | `ExchangeType.Direct` | `"direct"` |
+  | `ExchangeType.Fanout` | `"fanout"` |
+  | `ExchangeType.Topic` | `"topic"` |
+  | `ExchangeType.Headers` | `"headers"` |
+</ParamField>
+
+<ParamField path="RedeliverUnackedMessages" type="bool" default="true">
+  Whether un-acknowledged messages are requeued and redelivered by the consumer background service after a processing failure.
+</ParamField>
+
+<ParamField path="QueuePrefix" type="string" required>
+  A namespace prefix applied to all queue names, formatted as `"{QueuePrefix}:{MessageTypeName}"`. Also prepended to routing keys by the publisher. Must not be null or empty.
+</ParamField>
+
+---
+
+## IRabbitMessageBroker
+
+The primary publishing interface. Inject `IRabbitMessageBroker` into your services or controllers to publish messages to the RabbitMQ exchange. It is registered as **scoped**, so it is safe to inject into scoped or transient services.
+
+### PublishAsync (single message)
+
+Publishes one message to the default or a specified exchange.
+
+```csharp
+Task PublishAsync<TMessage>(
+    TMessage message,
+    string? exchangeName       = null,
+    string? routingKey         = null,
+    CancellationToken cancellationToken = default)
+    where TMessage : IMessage
+```
+
+<ParamField path="message" type="TMessage" required>
+  The message to publish. Must implement `IMessage`. The publisher wraps it in an `EventMessage<TMessage>` envelope before serialization.
+</ParamField>
+
+<ParamField path="exchangeName" type="string?" default="null">
+  Override the exchange. When `null` or empty, `RabbitConfig.DefaultExchange` is used.
+</ParamField>
+
+<ParamField path="routingKey" type="string?" default="null">
+  Override the routing key. When `null` or empty, defaults to `"{QueuePrefix}:{typeof(TMessage).Name}"` (the same value used to name subscriber queues).
+</ParamField>
+
+<ParamField path="cancellationToken" type="CancellationToken" default="default">
+  Propagated to the underlying `IChannel.BasicPublishAsync` call.
+</ParamField>
+
+The publisher sets the following AMQP message properties automatically:
+
+- `CorrelationId` — a new GUID per batch (shared across messages in `PublishAsync(IEnumerable<...>)`).
+- `MessageId` — a new GUID per individual message.
+- `Type` — `typeof(TMessage).AssemblyQualifiedName`.
+- `Persistent = true`, `ContentType = "application/json"`, `ContentEncoding = "utf-8"`.
+
+```csharp
+public class OrderService
+{
+    private readonly IRabbitMessageBroker _broker;
+
+    public OrderService(IRabbitMessageBroker broker) => _broker = broker;
+
+    public async Task PlaceOrderAsync(Order order, CancellationToken ct)
+    {
+        // business logic ...
+        await _broker.PublishAsync(new OrderCreated { OrderId = order.Id }, cancellationToken: ct);
+    }
+}
+```
+
+---
+
+### PublishAsync (batch)
+
+Publishes a collection of messages of the same type, sequentially calling the single-message overload for each item.
+
+```csharp
+Task PublishAsync<TMessage>(
+    IEnumerable<TMessage> messages,
+    string? exchangeName       = null,
+    string? routingKey         = null,
+    CancellationToken cancellationToken = default)
+    where TMessage : IMessage
+```
+
+<ParamField path="messages" type="IEnumerable<TMessage>" required>
+  The messages to publish. Each is published as an independent AMQP message with its own `MessageId`.
+</ParamField>
+
+<ParamField path="exchangeName" type="string?" default="null">
+  Exchange override applied to every message in the batch.
+</ParamField>
+
+<ParamField path="routingKey" type="string?" default="null">
+  Routing key override applied to every message in the batch.
+</ParamField>
+
+<ParamField path="cancellationToken" type="CancellationToken" default="default">
+  Propagated to each individual publish call.
+</ParamField>
+
+```csharp
+var events = orders.Select(o => new OrderCreated { OrderId = o.Id });
+await _broker.PublishAsync(events, cancellationToken: ct);
+```
+
+---
+
+## IMessage and IMessageHandler\<T\>
+
+### IMessage
+
+A **marker interface** with no members. Implement it on any class or record to designate it as a message type that can be published and consumed through the event bus.
+
+```csharp
+public interface IMessage { }
+
+// Example message
+public record OrderCreated(Guid OrderId, decimal Total) : IMessage;
+```
+
+---
+
+### IMessageHandler\<TMessage\>
+
+Implement this interface to create a consumer for a specific message type. At startup, `AddEvents` scans all loaded assemblies and registers every concrete implementation as a scoped DI service. The `RabbitMqConsumerService` background service dispatches incoming messages to the appropriate handler.
+
+```csharp
+public interface IMessageHandler<in TMessage> where TMessage : IMessage
+{
+    Task HandleAsync(TMessage message, CancellationToken cancellationToken = default);
+}
+```
+
+<ParamField path="TMessage" type="generic : IMessage" required>
+  The message type this handler processes. Must implement `IMessage`.
+</ParamField>
+
+<ParamField path="message" type="TMessage" required>
+  The deserialized message payload extracted from the `EventMessage<TMessage>` envelope.
+</ParamField>
+
+<ParamField path="cancellationToken" type="CancellationToken" default="default">
+  Passed from the background consumer; respect it to support graceful shutdown.
+</ParamField>
+
+```csharp
+public class OrderCreatedHandler : IMessageHandler<OrderCreated>
+{
+    private readonly ILogger<OrderCreatedHandler> _logger;
+
+    public OrderCreatedHandler(ILogger<OrderCreatedHandler> logger)
+        => _logger = logger;
+
+    public Task HandleAsync(OrderCreated message, CancellationToken cancellationToken = default)
+    {
+        _logger.LogInformation("Order {OrderId} created", message.OrderId);
+        return Task.CompletedTask;
+    }
+}
+```
+
+<Note>
+  Handler discovery is performed over **all assemblies in the runtime dependency context**, not just the entry-point assembly. You do not need to pass an `Assembly` argument — simply ensure the assembly containing your handlers is referenced by (or is) the running application.
+</Note>
+
+---
+
+## EventMessage\<T\>
+
+The **envelope** type that wraps every outgoing message. The publisher creates an `EventMessage<TMessage>` automatically — you never need to instantiate it directly. On the consumer side, the background service unwraps the envelope and delivers only the inner `Data` to `HandleAsync`.
+
+```csharp
+public sealed class EventMessage<T> : IEventMessage<T> where T : IMessage
+{
+    public string        MessageId      { get; }
+    public string        MessageName    { get; }
+    public DateTime      CreatedAt      { get; }
+    public EventMetadata EventMetadata  { get; }
+    public T             Data           { get; }
+}
+```
+
+<ResponseField name="MessageId" type="string">
+  A unique GUID string generated by the publisher for each individual message. Also set as the AMQP `MessageId` property.
+</ResponseField>
+
+<ResponseField name="MessageName" type="string">
+  The simple type name of `T` (e.g. `"OrderCreated"`). Used as the default routing key suffix by the publisher.
+</ResponseField>
+
+<ResponseField name="CreatedAt" type="DateTime">
+  The UTC timestamp when the envelope was constructed by the publisher.
+</ResponseField>
+
+<ResponseField name="EventMetadata" type="EventMetadata">
+  Correlation and timing metadata. See below.
+</ResponseField>
+
+<ResponseField name="Data" type="T">
+  The original message payload. The consumer background service extracts this and passes it to `IMessageHandler<T>.HandleAsync`.
+</ResponseField>
+
+---
+
+### EventMetadata
+
+A `record` carrying correlation context that is automatically populated by `RabbitMessageBroker`.
+
+```csharp
+public record EventMetadata(string? CorrelationId, DateTime CreatedAt);
+```
+
+<ResponseField name="CorrelationId" type="string?">
+  A GUID string that correlates a group of related messages (shared within a single `PublishAsync` call). Also set as the AMQP `CorrelationId` property.
+</ResponseField>
+
+<ResponseField name="CreatedAt" type="DateTime">
+  UTC timestamp recorded by `GetMetadata()` at the moment of publishing — useful for latency tracking.
+</ResponseField>
+
+---
+
+## Full example
+
+<CodeGroup>
+
+```csharp Program.cs
+using FoundationKit.Events.Extensions;
+using FoundationKit.Events.RabbitMQ.Config;
+using FoundationKit.Events.RabbitMQ.ValueObjects;
+
+builder.Services.AddEvents(new RabbitConfig
+{
+    Host                  = "localhost",
+    User                  = "guest",
+    Password              = "guest",
+    DefaultExchange       = "shop.events",
+    DefaultExchangeType   = ExchangeType.Topic,
+    QueuePrefix           = "shop",
+    RedeliverUnackedMessages = true
+});
+
+// Register queue bindings for each consumed message type
+builder.Services.AddSubscriber<OrderCreated>();
+builder.Services.AddSubscriber<PaymentReceived>();
+
+var app = builder.Build();
+app.Run();
+```
+
+```csharp Messages.cs
+public record OrderCreated(Guid OrderId, decimal Total) : IMessage;
+public record PaymentReceived(Guid OrderId, string PaymentRef) : IMessage;
+```
+
+```csharp Handlers.cs
+public class OrderCreatedHandler : IMessageHandler<OrderCreated>
+{
+    public Task HandleAsync(OrderCreated msg, CancellationToken ct = default)
+    {
+        Console.WriteLine($"Processing order {msg.OrderId} — total {msg.Total:C}");
+        return Task.CompletedTask;
+    }
+}
+
+public class PaymentReceivedHandler : IMessageHandler<PaymentReceived>
+{
+    public Task HandleAsync(PaymentReceived msg, CancellationToken ct = default)
+    {
+        Console.WriteLine($"Payment {msg.PaymentRef} for order {msg.OrderId}");
+        return Task.CompletedTask;
+    }
+}
+```
+
+```csharp OrderController.cs
+[ApiController]
+[Route("api/[controller]")]
+public class OrderController : ControllerBase
+{
+    private readonly IRabbitMessageBroker _broker;
+
+    public OrderController(IRabbitMessageBroker broker) => _broker = broker;
+
+    [HttpPost]
+    public async Task<IActionResult> CreateOrder([FromBody] CreateOrderRequest req,
+        CancellationToken ct)
+    {
+        // ... create order in database ...
+        await _broker.PublishAsync(
+            new OrderCreated(req.OrderId, req.Total),
+            cancellationToken: ct);
+
+        return Accepted();
+    }
+}
+```
+
+</CodeGroup>

@@ -1,0 +1,118 @@
+{
+  "projectType": "sdk-library",
+  "projectName": "FoundationKit",
+  "projectDescription": "A modular .NET 8 NuGet library providing base repositories, base models, DTOs, EF Core configurations, encryption utilities, event bus integration, and ready-to-inherit controllers for ASP.NET Core applications.",
+  "theme": "luma",
+  "primaryColor": "#044c84",
+  "lightColor": null,
+  "darkColor": null,
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "packages"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/base-models",
+              "concepts/repositories",
+              "concepts/dtos-and-pagination"
+            ]
+          },
+          {
+            "group": "Guides",
+            "pages": [
+              "guides/efcore-setup",
+              "guides/base-controllers",
+              "guides/encryption",
+              "guides/event-bus",
+              "guides/minimal-api-handlers"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Repository",
+            "pages": [
+              "api/ibase-repository",
+              "api/imap-repository",
+              "api/base-repository",
+              "api/map-repository"
+            ]
+          },
+          {
+            "group": "Domain",
+            "pages": [
+              "api/base-model",
+              "api/db-contexts",
+              "api/efcore-configuration",
+              "api/pagination"
+            ]
+          },
+          {
+            "group": "Extensions & Services",
+            "pages": [
+              "api/foundation-kit-extensions",
+              "api/encryptor-service",
+              "api/event-extensions"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Generic base repositories (BaseRepository, MapRepository) with full CRUD, soft-delete, pagination, and partial update support",
+    "AutoMapper-integrated repository pattern (MapRepository) mapping between domain entities and DTOs",
+    "Base EF Core DbContext classes (FoundationKitDbContext, FoundationKitIdentityDbContext) with automatic CreatedAt/UpdatedAt tracking",
+    "Abstract base models (BaseModel, BaseBasicModel) with Id, timestamps, soft-delete, and audit fields",
+    "Built-in pagination via Paginate query model and PaginationResult<T> response",
+    "Abstract base controllers for ASP.NET Core MVC and API (ApiCoreController, ApiMapController, MvcCoreController)",
+    "Minimal API handler pattern via IEndpointRouteHandler and UseFoundationKitApiHandlers",
+    "Dual-mode encryption: RSA/NaCl-based asymmetric (TweetNaCl/CurveX25519) and AES symmetric encryption",
+    "AES request decryption middleware (FoundationKitAesEncryptorMiddleware)",
+    "RabbitMQ event bus integration with typed message handlers, publisher, and background consumer service",
+    "LINQ/IQueryable pagination extension (PaginateAsync) and enum display-name helper"
+  ],
+  "publicApiSurface": [
+    "IBaseRepository<TModel>: GetPaginatedListAsync, GetListAsync, GetAll, CreateAsync, UpdateAsync, UpdatePartialEntityAsync, GetByIdAsync, SoftRemoveAsync, RemoveAsync, ExistAsync, GetOneAsync, CountAsync, CommitAndResultAsync",
+    "IMapRepository<TInputModel, TEditModel, TDtoModel>: GetPaginatedList, GetList, GetAll, Create, Update, GetById, SoftRemove, Remove, Exist, GetOneAsync, Count, CommitAndResultAsync",
+    "BaseRepository<TContext, TModel>: abstract EF Core base repository implementing IBaseRepository",
+    "MapRepository<TContext, TEntity, TInputModel, TEditModel, TDtoModel>: AutoMapper-backed repository implementing IMapRepository",
+    "BaseModel: Id (Guid), CreatedAt, UpdatedAt, IsDeleted, CreatedBy, UpdatedBy",
+    "BaseBasicModel: BaseModel without auditing columns mapped to DB",
+    "BaseInput / BaseEdit / BaseOutput: DTO base classes for create, update, read operations",
+    "Paginate: Page, Qyt, OrderByDesc, NoPaginate, Query",
+    "PaginationResult<T>: ActualPage, Qyt, PageTotal, Total, Results",
+    "FoundationKitDbContext / FoundationKitIdentityDbContext: abstract DbContext bases",
+    "EFCoreConfiguration<TEntity>: abstract entity configuration with global soft-delete query filter",
+    "FoundationKitStaticOptions.DateUtc: global UTC date toggle",
+    "ApiCoreController<TModel, TService>: abstract API controller (GET, POST, PUT, DELETE + pagination)",
+    "ApiMapController<TService, TDtoModel, TInputModel, TEditModel>: AutoMapper-backed abstract API controller",
+    "MvcCoreController<TModel, TService>: abstract MVC controller (Index, Create, Update, Delete)",
+    "FoundationKitExtensions.AddFoundationKit: registers AutoMapper",
+    "FoundationKitExtensions.AddFoundationKitIdentity / AddFoundationKitIdentityWithMapper: Identity DI setup",
+    "FoundationKitExtensions.AddFoundationKitEncryptor: registers IEncryptorService",
+    "IEncryptorService: EncryptCore, DecryptCore, AESEncrypt, AESDecrypt",
+    "FoundationKitAesEncryptorMiddleware: request-body AES decryption middleware",
+    "IEndpointRouteHandler.MapEndpoints: minimal-API handler interface",
+    "UseFoundationKitApiHandlers(assembly): scans and registers all IEndpointRouteHandler implementations",
+    "EventExtensions.AddEvents(RabbitConfig): registers RabbitMQ connection, publisher, and consumer background service",
+    "EventExtensions.AddSubscriber<T>: registers a queue binding for a message type",
+    "IRabbitMessageBroker.PublishAsync<TMessage>: publishes a message or batch to an exchange",
+    "IMessageHandler<TMessage>.HandleAsync: implement to consume messages from RabbitMQ",
+    "QueryableExtensions.PaginateAsync / Paginate: IQueryable pagination helpers",
+    "EnumExtension.GetDisplayName: reads [Display] attribute from enum values"
+  ]
+}

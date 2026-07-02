@@ -1,0 +1,222 @@
+---
+title: "Configure EF Core with FoundationKit DbContext"
+sidebarTitle: "EF Core Setup"
+description: "Set up FoundationKitDbContext or FoundationKitIdentityDbContext to get automatic timestamp tracking, soft-delete query filters, and migration support in your ASP.NET Core app."
+---
+
+FoundationKit wraps EF Core with two abstract `DbContext` base classes that automatically stamp `CreatedAt` and `UpdatedAt` on every `BaseModel` entity, and an `EFCoreConfiguration<TEntity>` base class that applies a global soft-delete query filter — so deleted rows are always invisible to normal queries without any extra effort.
+
+## FoundationKitDbContext
+
+`FoundationKitDbContext` is an abstract class that inherits `DbContext`. It overrides both `SaveChangesAsync` and `SaveChanges` to iterate every tracked `BaseModel` entry and set timestamps based on its state:
+
+- **Added** → sets `CreatedAt`
+- **Modified** → sets `UpdatedAt`
+
+The timestamp used is controlled by `FoundationKitStaticOptions.DateUtc` (see below).
+
+Inherit it directly in your application's `DbContext`:
+
+```csharp
+// Domain/Persistence/ApplicationDbContext.cs
+public class ApplicationDbContext : FoundationKitDbContext
+{
+    public ApplicationDbContext(DbContextOptions<ApplicationDbContext> options)
+        : base(options)
+    {
+    }
+
+    public DbSet<Person> Persons { get; set; }
+}
+```
+
+`BaseModel` provides the core fields every entity inherits automatically:
+
+```csharp
+public abstract class BaseModel
+{
+    public virtual Guid Id { get; set; }
+    public virtual DateTime CreatedAt { get; set; }
+    public virtual DateTime? UpdatedAt { get; set; }
+    public virtual bool IsDeleted { get; set; }
+    public virtual string? CreatedBy { get; set; }
+    public virtual string? UpdatedBy { get; set; }
+}
+```
+
+## FoundationKitIdentityDbContext\<TUser\>
+
+When your application uses ASP.NET Core Identity, inherit `FoundationKitIdentityDbContext<TUser>` instead. It extends `IdentityDbContext<TUser>` while applying the same automatic timestamp logic:
+
+```csharp
+// Domain/Persistence/ApplicationIdentityDbContext.cs
+public class ApplicationIdentityDbContext : FoundationKitIdentityDbContext<ApplicationUser>
+{
+    public ApplicationIdentityDbContext(DbContextOptions<ApplicationIdentityDbContext> options)
+        : base(options)
+    {
+    }
+
+    public DbSet<Person> Persons { get; set; }
+}
+```
+
+Register Identity alongside AutoMapper using the `AddFoundationKitIdentityWithMapper` extension:
+
+```csharp
+// Program.cs
+builder.Services.AddFoundationKitIdentityWithMapper<ApplicationUser, ApplicationIdentityDbContext>(
+    Assembly.GetExecutingAssembly());
+```
+
+## EFCoreConfiguration\<TEntity\>
+
+`EFCoreConfiguration<TEntity>` is an abstract `IEntityTypeConfiguration<TEntity>` that calls `builder.HasQueryFilter(x => !x.IsDeleted)` automatically inside `Configure`. You only need to implement the `ConfigureEF` method to add entity-specific configuration:
+
+```csharp
+// EF/Configurations/PersonConfiguration.cs
+public class PersonConfiguration : EFCoreConfiguration<Person>
+{
+    public override void ConfigureEF(EntityTypeBuilder<Person> builder)
+    {
+        builder.ToTable("Persons");
+        builder.Property(x => x.Name).HasMaxLength(200).IsRequired();
+    }
+}
+```
+
+Apply configurations in your `DbContext` by overriding `OnModelCreating`:
+
+```csharp
+public class ApplicationDbContext : FoundationKitDbContext
+{
+    public ApplicationDbContext(DbContextOptions<ApplicationDbContext> options)
+        : base(options)
+    {
+    }
+
+    public DbSet<Person> Persons { get; set; }
+
+    protected override void OnModelCreating(ModelBuilder modelBuilder)
+    {
+        base.OnModelCreating(modelBuilder);
+        modelBuilder.ApplyConfiguration(new PersonConfiguration());
+    }
+}
+```
+
+<Note>
+The `HasQueryFilter(x => !x.IsDeleted)` filter is applied globally at the EF Core model level. Any query against a configured entity will automatically exclude rows where `IsDeleted = true`, including those issued through navigation properties. To intentionally query soft-deleted records, use `IgnoreQueryFilters()` on a specific query.
+</Note>
+
+## FoundationKitStaticOptions.DateUtc
+
+`FoundationKitStaticOptions` is a static class that holds a single flag controlling which clock is used for automatic timestamps:
+
+| Property | Type | Default | Description |
+|---|---|---|---|
+| `DateUtc` | `bool` | `false` | When `true`, uses `DateTime.UtcNow`; when `false`, uses `DateTime.Now` |
+
+Set it once at application startup in `Program.cs` before any entity is persisted:
+
+```csharp
+// Program.cs
+FoundationKitStaticOptions.DateUtc = true;
+
+var builder = WebApplication.CreateBuilder(args);
+// ...
+```
+
+<Warning>
+`FoundationKitStaticOptions.DateUtc` defaults to `false`, which means timestamps are recorded in the server's **local time zone**. In containerised or multi-region deployments this produces inconsistent data. Set it to `true` to use UTC universally.
+</Warning>
+
+## Complete DbContext example
+
+Below is a minimal but complete setup combining all the pieces above:
+
+```csharp
+// Domain/Models/Person.cs
+public class Person : BaseModel
+{
+    public string? Name { get; set; }
+}
+
+// EF/PersonConfiguration.cs
+public class PersonConfiguration : EFCoreConfiguration<Person>
+{
+    public override void ConfigureEF(EntityTypeBuilder<Person> builder)
+    {
+        builder.ToTable("Persons");
+        builder.Property(x => x.Name).HasMaxLength(200).IsRequired();
+    }
+}
+
+// Domain/Persistence/ApplicationDbContext.cs
+public class ApplicationDbContext : FoundationKitDbContext
+{
+    public ApplicationDbContext(DbContextOptions<ApplicationDbContext> options)
+        : base(options)
+    {
+    }
+
+    public DbSet<Person> Persons { get; set; }
+
+    protected override void OnModelCreating(ModelBuilder modelBuilder)
+    {
+        base.OnModelCreating(modelBuilder);
+        modelBuilder.ApplyConfiguration(new PersonConfiguration());
+    }
+}
+```
+
+## Registering the DbContext in Program.cs
+
+Register your context with the standard `AddDbContext` extension. The example below targets PostgreSQL via Npgsql:
+
+```csharp
+// Program.cs
+using FoundationKit.Domain.Option;
+using FoundationKit.Extensions;
+using System.Reflection;
+
+FoundationKitStaticOptions.DateUtc = true;
+
+var builder = WebApplication.CreateBuilder(args);
+
+// Register AutoMapper profiles in the executing assembly
+builder.Services.AddFoundationKit(Assembly.GetExecutingAssembly());
+
+// Register the DbContext
+builder.Services.AddDbContext<ApplicationDbContext>(options =>
+    options.UseNpgsql(builder.Configuration.GetConnectionString("postgres")));
+
+var app = builder.Build();
+app.Run();
+```
+
+## Migrations
+
+Use the standard EF Core CLI tools to create and apply migrations:
+
+<Steps>
+  <Step title="Add a migration">
+    ```bash
+    dotnet ef migrations add InitialCreate --project YourProject --startup-project YourStartupProject
+    ```
+  </Step>
+  <Step title="Apply migrations to the database">
+    ```bash
+    dotnet ef database update --project YourProject --startup-project YourStartupProject
+    ```
+  </Step>
+  <Step title="Generate a SQL script (optional, for production)">
+    ```bash
+    dotnet ef migrations script --idempotent -o migrations.sql
+    ```
+  </Step>
+</Steps>
+
+<Note>
+If your migrations assembly differs from the startup project, pass the output directory explicitly: `dotnet ef migrations add InitialCreate -o EF/Migrations`.
+</Note>

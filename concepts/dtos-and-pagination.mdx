@@ -1,0 +1,365 @@
+---
+title: "DTOs and Pagination in FoundationKit"
+sidebarTitle: "DTOs & Pagination"
+description: "Learn how FoundationKit's BaseInput, BaseEdit, BaseOutput, Paginate, and PaginationResult types standardize data transfer and list responses across your application."
+---
+
+FoundationKit provides a small set of base classes and query models that standardise how data flows into and out of your API. Rather than inventing a new shape for every endpoint, every create operation starts from `BaseInput`, every update from `BaseEdit`, and every read response from `BaseOutput`. List endpoints are paginated uniformly using the `Paginate` query model and always return a `PaginationResult<T>` wrapper. This consistency means your controllers, repositories, and clients all speak the same language, and cross-cutting concerns like hiding internal audit fields from callers are handled once in the base classes rather than repeated across every DTO.
+
+---
+
+## Input DTOs
+
+Input DTOs represent the data a caller sends to your API when creating or updating a resource.
+
+### BaseInput
+
+`BaseInput` is an intentionally empty base class. Its sole purpose is to provide a common type constraint for the generic repositories — `IMapRepository` requires `TInputModel : BaseInput`. Extend it with whatever properties your create operation needs.
+
+```csharp
+// FoundationKit.Domain/Dtos/Inputs/BaseInput.cs
+public class BaseInput
+{
+}
+```
+
+Extend `BaseInput` to define your create payload:
+
+```csharp
+// Example: PersonInput
+using FoundationKit.Domain.Dtos.Inputs;
+
+public class PersonInput : BaseInput
+{
+    public string? Name { get; set; }
+}
+```
+
+### BaseEdit
+
+`BaseEdit` is the base class for update DTOs. It carries all the fields that the repository needs to perform an update — `Id`, `UpdateAt`, `UpdatedBy`, `CreatedAt`, and `CreatedBy` — but every one of them is decorated with `[JsonIgnore]`. This means the fields are present on the C# object and can be populated internally (the repository copies `CreatedAt` and `CreatedBy` from the existing database record before saving), but they are **invisible to JSON deserialization**. A caller cannot override audit or timestamp fields by injecting them into the request body.
+
+```csharp
+// FoundationKit.Domain/Dtos/Inputs/BaseEdit.cs
+public abstract class BaseEdit
+{
+    [JsonIgnore] public virtual Guid Id { get; set; }
+    [JsonIgnore] public virtual DateTime? UpdateAt { get; set; }
+    [JsonIgnore] public virtual string? UpdatedBy { get; set; }
+    [JsonIgnore] public virtual DateTime CreatedAt { get; set; }
+    [JsonIgnore] public virtual string? CreatedBy { get; set; }
+}
+```
+
+Extend `BaseEdit` to define your update payload. Add only the fields you want callers to be able to change:
+
+```csharp
+// Example: PersonEdit
+using FoundationKit.Domain.Dtos.Inputs;
+
+public class PersonEdit : BaseEdit
+{
+    public string? Name { get; set; }
+}
+```
+
+The repository sets `Id` on the edit model from the route parameter before calling `Update`, and it reads back `CreatedAt` / `CreatedBy` from the existing entity so those audit values are never lost on an update.
+
+<Note>
+The `[JsonIgnore]` attributes on `BaseEdit` are a deliberate security boundary. Even if a client sends `"id": "..."` or `"createdBy": "..."` in the JSON body, those values will be ignored during deserialization. The `Id` is always taken from the URL route, and `CreatedAt`/`CreatedBy` are always preserved from the database record.
+</Note>
+
+---
+
+## Output DTOs
+
+Output DTOs represent the data your API returns to callers.
+
+### BaseOutput
+
+`BaseOutput` exposes the fields that are universally useful in a read response: the primary key, the formatted and raw creation timestamp, and the creator identifier. All downstream DTOs inherit these fields automatically.
+
+```csharp
+// FoundationKit.Domain/Dtos/Outputs/BaseOutput.cs
+public class BaseOutput
+{
+    public virtual Guid Id { get; set; }
+    public virtual string? CreatedAtStr { get; set; }
+    public virtual DateTime CreatedAt { get; set; }
+    public virtual string? CreatedBy { get; set; }
+}
+```
+
+Extend `BaseOutput` to add your domain-specific response fields:
+
+```csharp
+// Example: PersonDto
+using FoundationKit.Domain.Dtos.Outputs;
+
+public class PersonDto : BaseOutput
+{
+    public string? Name { get; set; }
+}
+```
+
+A serialised `PersonDto` response looks like:
+
+```json
+{
+  "id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+  "createdAtStr": "14/02/2025 03:45:22",
+  "createdAt": "2025-02-14T03:45:22Z",
+  "createdBy": "user@example.com",
+  "name": "Jane Doe"
+}
+```
+
+---
+
+## Complete example: Person DTOs
+
+The following is the full set of DTO classes from the FoundationKit example project, showing how all three layers fit together for a `Person` resource.
+
+<Steps>
+  <Step title="Create the entity">
+    ```csharp
+    // Domain/Models/Person.cs
+    public class Person : BaseModel
+    {
+        public string? Name { get; set; }
+
+        // CreatedBy is not persisted for this entity
+        [NotMapped]
+        public override string? CreatedBy { get; set; }
+    }
+    ```
+  </Step>
+
+  <Step title="Define the input DTO">
+    ```csharp
+    // Domain/Mappings/PersonInput.cs
+    using FoundationKit.Domain.Dtos.Inputs;
+
+    public class PersonInput : BaseInput
+    {
+        public string? Name { get; set; }
+    }
+    ```
+  </Step>
+
+  <Step title="Define the edit DTO">
+    ```csharp
+    // Domain/Mappings/PersonEdit.cs
+    using FoundationKit.Domain.Dtos.Inputs;
+
+    public class PersonEdit : BaseEdit
+    {
+        public string? Name { get; set; }
+    }
+    ```
+  </Step>
+
+  <Step title="Define the output DTO">
+    ```csharp
+    // Domain/Mappings/PersonDto.cs
+    using FoundationKit.Domain.Dtos.Outputs;
+
+    public class PersonDto : BaseOutput
+    {
+        public string? Name { get; set; }
+    }
+    ```
+  </Step>
+
+  <Step title="Register the AutoMapper profile">
+    ```csharp
+    // Mappings/PersonProfile.cs
+    using AutoMapper;
+
+    public class PersonProfile : Profile
+    {
+        public PersonProfile()
+        {
+            CreateMap<Person, PersonDto>().ReverseMap();
+            CreateMap<Person, PersonInput>().ReverseMap();
+            CreateMap<Person, PersonEdit>().ReverseMap();
+        }
+    }
+    ```
+  </Step>
+</Steps>
+
+---
+
+## Paginate
+
+`Paginate` is the query model that callers send when requesting a paginated list. Bind it with `[FromQuery]` so ASP.NET Core maps the URL query string automatically.
+
+```csharp
+// FoundationKit.Domain/Dtos/Paginations/Paginate.cs
+public class Paginate
+{
+    [FromQuery] public int Page { get; set; } = 1;
+    [FromQuery] public int Qyt { get; set; } = 10;
+    [FromQuery] public bool OrderByDesc { get; set; }
+    [FromQuery] public bool NoPaginate { get; set; }
+    [FromQuery] public string? Query { get; set; }
+}
+```
+
+### Paginate properties
+
+<ParamField query="Page" type="int" default="1">
+  The 1-based page number to retrieve. Defaults to `1` if not supplied.
+</ParamField>
+
+<ParamField query="Qyt" type="int" default="10">
+  The number of results to return per page (quantity). Defaults to `10`.
+</ParamField>
+
+<ParamField query="OrderByDesc" type="bool" default="false">
+  When `true`, results are sorted in descending order. When `false` (the default), results are sorted ascending. Ordering defaults to `CreatedAt` unless overridden in the repository call.
+</ParamField>
+
+<ParamField query="NoPaginate" type="bool" default="false">
+  When `true`, pagination is skipped entirely and all matching records are returned in a single `PaginationResult` with `ActualPage`, `Qyt`, `PageTotal`, and `Total` all set to `0` or `1`. Useful for dropdown/autocomplete scenarios where you need the full list.
+</ParamField>
+
+<ParamField query="Query" type="string">
+  A free-text search term. FoundationKit passes this value through to `PaginationResult.Query` unchanged — you are responsible for applying it as a filter expression when you call `GetPaginatedList` or `GetPaginatedListAsync`.
+</ParamField>
+
+### Using Paginate in a controller
+
+```csharp
+[HttpGet]
+public async Task<IActionResult> GetAll(
+    [FromQuery] Paginate paginate,
+    CancellationToken cancellationToken)
+{
+    // Apply the Query search term manually as a filter expression
+    var result = await _personMapService.GetPaginatedList(
+        paginate,
+        expression: string.IsNullOrWhiteSpace(paginate.Query)
+            ? null
+            : x => x.Name!.Contains(paginate.Query),
+        cancellationToken: cancellationToken
+    );
+
+    return Ok(result);
+}
+```
+
+A sample request URL:
+
+```
+GET /api/people?page=2&qyt=5&orderByDesc=true&query=Jane
+```
+
+---
+
+## PaginationResult\<T\>
+
+`PaginationResult<T>` is the standard response envelope for all paginated list endpoints. The repository methods return it already populated — you just return it from your controller.
+
+```csharp
+// FoundationKit.Domain/Dtos/Paginations/PaginationResult.cs
+public class PaginationResult<T>
+{
+    public int ActualPage { get; set; } = 1;
+    public int Qyt { get; set; }
+    public int PageTotal { get; set; }
+    public int Total { get; set; }
+    public string? Query { get; set; }
+    public virtual IReadOnlyCollection<T>? Results { get; set; }
+}
+```
+
+### PaginationResult properties
+
+<ResponseField name="actualPage" type="int">
+  The page number that was returned. Mirrors the `Page` value from the incoming `Paginate` query.
+</ResponseField>
+
+<ResponseField name="qyt" type="int">
+  The page size that was used. Mirrors the `Qyt` value from the incoming `Paginate` query.
+</ResponseField>
+
+<ResponseField name="pageTotal" type="int">
+  The total number of pages available, calculated as `ceil(Total / Qyt)`. Useful for rendering pagination controls on the client.
+</ResponseField>
+
+<ResponseField name="total" type="int">
+  The total number of records that match the filter, across all pages. `0` when `NoPaginate` is `true`.
+</ResponseField>
+
+<ResponseField name="query" type="string">
+  Echo of the search term from the `Paginate` request, or `null` if none was supplied. Useful for the client to display "showing results for…" messages.
+</ResponseField>
+
+<ResponseField name="results" type="IReadOnlyCollection<T>">
+  The records for the current page. An empty collection (never `null` in practice) when no records match.
+</ResponseField>
+
+### Example JSON response
+
+```json
+{
+  "actualPage": 2,
+  "qyt": 5,
+  "pageTotal": 4,
+  "total": 18,
+  "query": "Jane",
+  "results": [
+    {
+      "id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+      "createdAtStr": "14/02/2025 03:45:22",
+      "createdAt": "2025-02-14T03:45:22Z",
+      "createdBy": null,
+      "name": "Jane Doe"
+    },
+    {
+      "id": "1cb72e91-3c84-4a11-9df7-8b1d44f2c901",
+      "createdAtStr": "15/02/2025 11:02:07",
+      "createdAt": "2025-02-15T11:02:07Z",
+      "createdBy": null,
+      "name": "Jane Smith"
+    }
+  ]
+}
+```
+
+---
+
+## IQueryable extension: QueryableExtensions
+
+The `Foundationkit.Extensions.Enumerations.QueryableExtensions` class provides two extension methods that let you apply the same `Paginate` → `PaginationResult<T>` pattern to any `IQueryable<T>`, regardless of whether you are using a FoundationKit repository or building a query from scratch.
+
+### PaginateAsync
+
+Asynchronously materialises the query into a `PaginationResult<T>`. Respects `NoPaginate` — when set, all results are returned without slicing.
+
+```csharp
+using Foundationkit.Extensions.Enumerations;
+
+// Build any IQueryable...
+IQueryable<PersonDto> query = dbContext.People
+    .Where(p => !p.IsDeleted && p.Name!.StartsWith("J"))
+    .OrderByDescending(p => p.CreatedAt)
+    .ProjectTo<PersonDto>(mapper.ConfigurationProvider);
+
+// ...then paginate it with the incoming Paginate query model
+PaginationResult<PersonDto?> result = await query.PaginateAsync(paginate, cancellationToken);
+```
+
+### Paginate (synchronous)
+
+The synchronous overload works identically but blocks. Use it only when you are certain you are not in an async context (rare in ASP.NET Core).
+
+```csharp
+PaginationResult<PersonDto?> result = query.Paginate(paginate);
+```
+
+<Note>
+Both extension methods use the same `Page`, `Qyt`, and `NoPaginate` fields from the `Paginate` object. They do **not** apply the `Query` search term — filtering must be applied to the `IQueryable` before calling `PaginateAsync` or `Paginate`, as shown in the example above.
+</Note>

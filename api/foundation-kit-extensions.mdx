@@ -1,0 +1,258 @@
+---
+title: "FoundationKitExtensions — DI Registration Methods"
+sidebarTitle: "DI Extensions"
+description: "IServiceCollection extension methods for registering FoundationKit: AddFoundationKit, AddFoundationKitIdentity, AddFoundationKitIdentityWithMapper, and AddFoundationKitEncryptor."
+---
+
+`FoundationKitExtensions` is a static class in the `FoundationKit.Extensions` namespace that exposes a set of `IServiceCollection` extension methods for bootstrapping FoundationKit features. Each method wires up a specific subset of functionality — AutoMapper profiles, ASP.NET Core Identity, or the encryption service — so you only register what your application actually needs.
+
+## AddFoundationKit
+
+Registers AutoMapper by scanning the provided assembly for `Profile` subclasses. This is the minimal setup required to use FoundationKit's mapping conventions.
+
+```csharp
+public static IServiceCollection AddFoundationKit(
+    this IServiceCollection services,
+    Assembly assembly)
+```
+
+**Returns** `IServiceCollection` (fluent).
+
+<ParamField path="services" type="IServiceCollection" required>
+  The application's service collection, typically accessed as `builder.Services`.
+</ParamField>
+
+<ParamField path="assembly" type="Assembly" required>
+  The assembly that will be scanned for AutoMapper `Profile` classes. Pass `Assembly.GetExecutingAssembly()` to scan the entry-point project.
+</ParamField>
+
+```csharp
+// Program.cs
+builder.Services.AddFoundationKit(Assembly.GetExecutingAssembly());
+```
+
+---
+
+## AddFoundationKitIdentityWithMapper\<T, TDbContext\>
+
+Registers AutoMapper **and** the full ASP.NET Core Identity stack. Use this overload when your application uses both `MapRepository` (which depends on AutoMapper) and Identity-based authentication.
+
+```csharp
+public static IServiceCollection AddFoundationKitIdentityWithMapper<T, TDbContext>(
+    this IServiceCollection services,
+    Assembly assembly)
+    where T : IdentityUser
+    where TDbContext : IdentityDbContext<T>
+```
+
+Internally this calls:
+- `services.AddAutoMapper(assembly)` — scans the given assembly for `Profile` classes.
+- `services.AddIdentity<T, IdentityRole>()` — registers the core identity services.
+- `.AddRoles<IdentityRole>()` — enables role support.
+- `.AddEntityFrameworkStores<TDbContext>()` — wires EF Core persistence.
+- `.AddSignInManager<SignInManager<T>>()` — registers the sign-in manager.
+- `.AddDefaultTokenProviders()` — adds email/phone/authenticator token providers.
+
+**Returns** `IServiceCollection` (fluent).
+
+<ParamField path="services" type="IServiceCollection" required>
+  The application's service collection.
+</ParamField>
+
+<ParamField path="assembly" type="Assembly" required>
+  The assembly scanned for AutoMapper `Profile` classes.
+</ParamField>
+
+<ParamField path="T" type="generic : IdentityUser" required>
+  Your application's user entity, which must extend `Microsoft.AspNetCore.Identity.IdentityUser`.
+</ParamField>
+
+<ParamField path="TDbContext" type="generic : IdentityDbContext<T>" required>
+  Your EF Core database context, which must extend `Microsoft.AspNetCore.Identity.EntityFrameworkCore.IdentityDbContext<T>`.
+</ParamField>
+
+```csharp
+// Program.cs
+builder.Services.AddFoundationKitIdentityWithMapper<ApplicationUser, AppDbContext>(
+    Assembly.GetExecutingAssembly());
+```
+
+---
+
+## AddFoundationKitIdentity\<T, TDbContext\>
+
+Registers ASP.NET Core Identity **without** AutoMapper. Choose this overload when your application does not use `MapRepository` or otherwise manages its own mapping, but still requires Identity-based authentication and authorization.
+
+```csharp
+public static IServiceCollection AddFoundationKitIdentity<T, TDbContext>(
+    this IServiceCollection services)
+    where T : IdentityUser
+    where TDbContext : IdentityDbContext<T>
+```
+
+Registers the same Identity pipeline as `AddFoundationKitIdentityWithMapper` (roles, EF Core stores, `SignInManager`, and default token providers) but omits the `AddAutoMapper` call.
+
+**Returns** `IServiceCollection` (fluent).
+
+<ParamField path="services" type="IServiceCollection" required>
+  The application's service collection.
+</ParamField>
+
+<ParamField path="T" type="generic : IdentityUser" required>
+  Your application's user entity.
+</ParamField>
+
+<ParamField path="TDbContext" type="generic : IdentityDbContext<T>" required>
+  Your EF Core database context.
+</ParamField>
+
+```csharp
+// Program.cs
+builder.Services.AddFoundationKitIdentity<ApplicationUser, AppDbContext>();
+```
+
+---
+
+## AddFoundationKitEncryptor
+
+Registers `IEncryptorService` (backed by `EncryptorService`) along with an `EncryptorOption` instance that carries the asymmetric key pair and AES header name. `IEncryptorService` itself is always registered as **scoped**; the `EncryptorOption` registration respects the `lifetime` parameter.
+
+```csharp
+public static IServiceCollection AddFoundationKitEncryptor(
+    this IServiceCollection services,
+    EncryptorOption options,
+    ServiceLifetime lifetime = ServiceLifetime.Singleton)
+```
+
+**Returns** `IServiceCollection` (fluent).
+
+<ParamField path="services" type="IServiceCollection" required>
+  The application's service collection.
+</ParamField>
+
+<ParamField path="options" type="EncryptorOption" required>
+  Configuration object that holds the TweetNaCl key pair, optional text encoding, and the AES header name. See field descriptions below.
+</ParamField>
+
+<ParamField path="lifetime" type="ServiceLifetime" default="ServiceLifetime.Singleton">
+  Controls how the `EncryptorOption` instance is registered. Accepted values: `Singleton` (default), `Transient`, or `Scoped`. `IEncryptorService` itself is always registered as scoped regardless of this value.
+</ParamField>
+
+### EncryptorOption fields
+
+<ResponseField name="PrivateKey" type="string?">
+  Base64-encoded Curve25519 private key used for TweetNaCl asymmetric encryption and decryption. Can be overridden per-call via the `pvKey` parameter on `EncryptCore`/`DecryptCore`.
+</ResponseField>
+
+<ResponseField name="PublicKey" type="string?">
+  Base64-encoded Curve25519 public key. Can be overridden per-call via the `pbKey` parameter.
+</ResponseField>
+
+<ResponseField name="Enconding" type="System.Text.Encoding?">
+  Text encoding used when converting serialized JSON to/from bytes. Defaults to `Encoding.UTF8` when `null`.
+</ResponseField>
+
+<ResponseField name="HeaderAes" type="string?">
+  The HTTP request-header name that carries the per-request AES configuration (key + IV), itself encrypted with the asymmetric key pair. For example `"x-aes-config"`. Required if you use `AesOk` or `FoundationKitAesEncryptorMiddleware`.
+</ResponseField>
+
+```csharp
+// Program.cs
+builder.Services.AddFoundationKitEncryptor(
+    new EncryptorOption
+    {
+        PublicKey  = "BASE64_PUBLIC_KEY",
+        PrivateKey = "BASE64_PRIVATE_KEY",
+        HeaderAes  = "x-aes-config"
+    },
+    lifetime: ServiceLifetime.Singleton);
+```
+
+<Note>
+  `TryAddSingleton` / `TryAddTransient` / `TryAddScoped` are used internally, so calling `AddFoundationKitEncryptor` multiple times will not overwrite an already-registered `EncryptorOption`.
+</Note>
+
+---
+
+## UseFoundationKitApiHandlers
+
+An extension on `WebApplication` that auto-discovers and maps all minimal-API endpoint groups defined in the given assembly. Call this in `Program.cs` after `var app = builder.Build()`.
+
+```csharp
+public static WebApplication UseFoundationKitApiHandlers(
+    this WebApplication app,
+    Assembly assembly)
+```
+
+**Returns** the same `WebApplication` instance (fluent).
+
+<ParamField path="app" type="WebApplication" required>
+  The built `WebApplication` instance.
+</ParamField>
+
+<ParamField path="assembly" type="Assembly" required>
+  The assembly scanned for concrete, non-abstract, non-generic classes that implement `IEndpointRouteHandler` and have a public parameterless constructor.
+</ParamField>
+
+```csharp
+// Program.cs
+var app = builder.Build();
+app.UseFoundationKitApiHandlers(Assembly.GetExecutingAssembly());
+app.Run();
+```
+
+### IEndpointRouteHandler
+
+Implement this interface to define a group of minimal-API endpoints that FoundationKit will register automatically.
+
+```csharp
+public interface IEndpointRouteHandler
+{
+    void MapEndpoints(IEndpointRouteBuilder app);
+}
+```
+
+```csharp
+// Example handler
+public class ProductEndpoints : IEndpointRouteHandler
+{
+    public void MapEndpoints(IEndpointRouteBuilder app)
+    {
+        app.MapGet("/products",    () => Results.Ok());
+        app.MapPost("/products",   () => Results.Created());
+        app.MapDelete("/products/{id}", (int id) => Results.NoContent());
+    }
+}
+```
+
+---
+
+## MapEndpoints (IEndpointRouteBuilder)
+
+The lower-level extension that `UseFoundationKitApiHandlers` delegates to. Can be called directly on any `IEndpointRouteBuilder` — useful when you want to scope endpoint registration inside a route group.
+
+```csharp
+public static void MapEndpoints(
+    this IEndpointRouteBuilder app,
+    Assembly assembly)
+```
+
+<ParamField path="app" type="IEndpointRouteBuilder" required>
+  Any endpoint route builder, including a `RouteGroupBuilder` returned by `app.MapGroup(...)`.
+</ParamField>
+
+<ParamField path="assembly" type="Assembly" required>
+  The assembly scanned for `IEndpointRouteHandler` implementations.
+</ParamField>
+
+The method enumerates all public types in the assembly, filters those that are concrete classes with a public parameterless constructor and implement `IEndpointRouteHandler`, instantiates each one with `Activator.CreateInstance`, and calls `MapEndpoints(app)` on the instance.
+
+```csharp
+// Scoped under a versioned route group
+var v1 = app.MapGroup("/api/v1");
+v1.MapEndpoints(Assembly.GetExecutingAssembly());
+```
+
+<Tip>
+  Because handlers are instantiated without the DI container, they must have a public parameterless constructor. Any dependencies should be resolved inside `MapEndpoints` via the `app.ServiceProvider` or through endpoint-level dependency injection.
+</Tip>

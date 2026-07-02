@@ -1,0 +1,190 @@
+---
+title: "BaseModel and BaseBasicModel — Entity Base Classes"
+sidebarTitle: "Base Models"
+description: "BaseModel provides Id, timestamps, soft-delete, and audit fields. BaseBasicModel extends it without persisting audit columns, for simpler entities."
+---
+
+Every entity in a FoundationKit application ultimately derives from one of two abstract base classes: `BaseModel` or `BaseBasicModel`. These classes live in the `FoundationKit.Domain.Models` namespace and establish a consistent, convention-driven shape for all database-mapped types — covering primary key generation, automatic timestamp tracking, soft-delete support, and optional audit columns. Because every property is declared `virtual`, you can selectively override behaviour in individual entities without losing the framework's built-in automation.
+
+---
+
+## BaseModel
+
+`BaseModel` is the root abstract class. All entities that need the full set of audit columns (`CreatedBy`, `UpdatedBy`) should inherit from it directly.
+
+```csharp
+public abstract class BaseModel
+{
+    public virtual Guid         Id          { get; set; }
+    public virtual DateTime     CreatedAt   { get; set; }
+    public virtual DateTime?    UpdatedAt   { get; set; }
+
+    [NotMapped]
+    public string CreatedAtStr
+        => CreatedAt.ToString("dd/MM/yyyy hh:mm:ss");
+
+    [NotMapped]
+    public string UpdateAtStr
+        => UpdatedAt != null
+               ? UpdatedAt.Value.ToString("dd/MM/yyyy hh:mm:ss")
+               : "";
+
+    public virtual bool    IsDeleted  { get; set; }
+    public virtual string? CreatedBy  { get; set; }
+    public virtual string? UpdatedBy  { get; set; }
+}
+```
+
+### Properties
+
+<ResponseField name="Id" type="Guid" required>
+  The primary key of the entity. Declared `virtual` so EF Core's change tracker
+  can proxy it, and so derived classes may override the getter/setter or add
+  database-specific annotations.
+</ResponseField>
+
+<ResponseField name="CreatedAt" type="DateTime" required>
+  The UTC or local timestamp at which the record was first saved. Set
+  automatically by `FoundationKitDbContext.SaveChanges[Async]` whenever the
+  entity state is `Added`. You should not set this field manually.
+</ResponseField>
+
+<ResponseField name="UpdatedAt" type="DateTime?">
+  The UTC or local timestamp of the most recent modification. Set automatically
+  on `Modified` state. Remains `null` until the entity is changed for the first
+  time after creation.
+
+  <Note>
+    If you need to override the column name in the database (e.g. to match a
+    legacy schema), add `[Column("UpdateAt")]` to the overridden property in
+    your derived entity, as noted in the source XML docs.
+  </Note>
+</ResponseField>
+
+<ResponseField name="CreatedAtStr" type="string">
+  A `[NotMapped]` computed property that formats `CreatedAt` as
+  `"dd/MM/yyyy hh:mm:ss"`. Use this in DTOs or view models to avoid manual
+  formatting at the presentation layer.
+</ResponseField>
+
+<ResponseField name="UpdateAtStr" type="string">
+  A `[NotMapped]` computed property that formats `UpdatedAt` as
+  `"dd/MM/yyyy hh:mm:ss"`, or returns an empty string `""` when `UpdatedAt`
+  is `null`.
+</ResponseField>
+
+<ResponseField name="IsDeleted" type="bool" required>
+  Soft-delete flag. When `true` the record is considered deleted, but it is
+  **not** physically removed from the database. `EFCoreConfiguration<TEntity>`
+  registers a global query filter `x => !x.IsDeleted` so that deleted records
+  are automatically excluded from all LINQ queries unless you explicitly call
+  `.IgnoreQueryFilters()`.
+</ResponseField>
+
+<ResponseField name="CreatedBy" type="string?">
+  Audit column that stores the identifier (e.g. user ID or username) of the
+  principal that created the record. Not set automatically — your application
+  service or repository layer is responsible for populating this field before
+  calling `SaveChanges`.
+</ResponseField>
+
+<ResponseField name="UpdatedBy" type="string?">
+  Audit column that stores the identifier of the principal that last modified
+  the record. Same semantics as `CreatedBy`.
+</ResponseField>
+
+### Usage example
+
+```csharp
+using FoundationKit.Domain.Models;
+
+// A fully-audited entity — CreatedBy and UpdatedBy are persisted
+public class Order : BaseModel
+{
+    public string Reference { get; set; } = default!;
+    public decimal Total     { get; set; }
+}
+```
+
+---
+
+## BaseBasicModel
+
+`BaseBasicModel` inherits from `BaseModel` and overrides both `CreatedBy` and
+`UpdatedBy` with the `[NotMapped]` attribute. The effect is that EF Core will
+**not** create columns for those two audit fields, while every other property
+(`Id`, `CreatedAt`, `UpdatedAt`, `IsDeleted`, and the computed strings) is
+mapped exactly as in `BaseModel`.
+
+```csharp
+public abstract class BaseBasicModel : BaseModel
+{
+    [NotMapped]
+    public override string? CreatedBy { get; set; }
+
+    [NotMapped]
+    public override string? UpdatedBy { get; set; }
+}
+```
+
+Use `BaseBasicModel` for reference-data tables, lookup lists, or any entity
+where auditing who made changes is unnecessary and you want to keep the schema
+clean.
+
+### Usage example
+
+```csharp
+using FoundationKit.Domain.Models;
+
+// Lookup table — no audit columns needed in the database
+public class Country : BaseBasicModel
+{
+    public string Code { get; set; } = default!;
+    public string Name { get; set; } = default!;
+}
+```
+
+<Tip>
+  Because `CreatedBy` and `UpdatedBy` are still **present** on the in-memory
+  object (just not persisted), you can safely use `BaseBasicModel`-derived
+  types in shared code paths that reference `BaseModel` without null-guard
+  gymnastics — the properties simply won't round-trip through the database.
+</Tip>
+
+---
+
+## Choosing between the two
+
+| Requirement                                   | Use              |
+|-----------------------------------------------|------------------|
+| Full audit trail (who created / last updated) | `BaseModel`      |
+| Timestamps and soft-delete only               | `BaseBasicModel` |
+| Reference / lookup data                       | `BaseBasicModel` |
+| Domain aggregates with security requirements  | `BaseModel`      |
+
+---
+
+## Virtual properties and EF Core proxies
+
+All mapped properties on both classes are declared `virtual`. This has two
+practical consequences:
+
+1. **EF Core lazy-loading proxies** — if you enable lazy loading via
+   `UseLazyLoadingProxies()`, EF Core can generate proxy types for your
+   entities. Proxies require that all navigation properties (and, by convention,
+   all properties) are `virtual`.
+
+2. **Override in derived classes** — you can override any property to attach
+   additional data annotations, change column names, or alter behaviour without
+   modifying the base class.
+
+```csharp
+public class Invoice : BaseModel
+{
+    // Override UpdatedAt to customise the column name in this entity only
+    [Column("last_modified")]
+    public override DateTime? UpdatedAt { get; set; }
+
+    public string InvoiceNumber { get; set; } = default!;
+}
+```

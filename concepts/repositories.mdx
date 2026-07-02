@@ -1,0 +1,252 @@
+---
+title: "Repository Pattern in FoundationKit: BaseRepository and MapRepository"
+sidebarTitle: "Repositories"
+description: "FoundationKit provides two generic EF Core repository base classes: BaseRepository for direct entity access, and MapRepository for AutoMapper-powered DTO projection."
+---
+
+FoundationKit ships two abstract repository base classes so you can choose the right level of abstraction for each service in your application. `BaseRepository` works directly with your EF Core entity type and is the simplest starting point — every method accepts and returns the entity class itself. `MapRepository` adds an AutoMapper layer on top, translating between your input DTOs, edit DTOs, and output DTOs transparently, which makes it the natural choice for API services that expose a separate public contract from the database schema. Both classes sit in `FoundationKit.Repository.Services` and provide an identical surface area of CRUD, pagination, soft-delete, partial update, and transaction management — you choose which one to inherit based on whether your service layer should deal in entities or DTOs.
+
+---
+
+## BaseRepository
+
+`BaseRepository<TContext, TModel>` is the lower-level option. It requires two generic parameters: your `DbContext` subclass and an entity class that inherits `BaseModel`. All methods return the entity directly — there is no mapping step. Register it when your service layer is the internal backbone of your application and you are happy to map to DTOs at the controller or handler level.
+
+### Generic signature
+
+```csharp
+public abstract class BaseRepository<TContext, TModel> : IBaseRepository<TModel>
+    where TContext : DbContext
+    where TModel : BaseModel
+```
+
+### IBaseRepository method surface
+
+| Method | Returns | Description |
+|---|---|---|
+| `GetAll(expression?, orderDesc, ordered?, includes[])` | `IQueryable<TModel>` | Composable query with optional filter, ordering, and eager-load includes. |
+| `GetListAsync(orderDesc, expression?, ordered?, ct, includes[])` | `Task<IEnumerable<TModel>>` | Materialises a filtered, ordered list. |
+| `GetPaginatedListAsync(paginate, expression?, ordered?, ct, includes[])` | `Task<PaginationResult<TModel>>` | Returns a paginated result set. |
+| `GetByIdAsync(id, asNoTracking, ct, includes[])` | `Task<TModel?>` | Fetches a single entity by primary key. |
+| `GetOneAsync(expression, ct)` | `Task<TModel?>` | Fetches the first entity matching a predicate. |
+| `ExistAsync(expression?, ct)` | `Task<bool>` | Returns `true` if any matching entity exists. |
+| `CountAsync(ct, expressions[])` | `Task<int>` | Counts entities matching zero or more predicates. |
+| `CreateAsync(model, ct)` | `Task<TModel>` | Adds the entity and commits a transaction. |
+| `UpdateAsync(model, ct, verifyEntity)` | `Task<TModel?>` | Replaces the entity and commits. When `verifyEntity=true`, the original `CreatedBy`/`CreatedAt` are preserved. |
+| `UpdatePartialEntityAsync(entity, expressions, ct)` | `Task` | Marks only the listed property expressions as modified and saves. |
+| `SoftRemoveAsync(id, ct)` | `Task<bool>` | Sets `IsDeleted = true` and commits. |
+| `RemoveAsync(id, ct)` | `Task<bool>` | Physically deletes the row and commits. |
+| `CommitAndResultAsync(ct)` | `Task<string?>` | Wraps `SaveChangesAsync` in a transaction; returns `null` on success or the error message on failure. |
+
+### Implementing BaseRepository
+
+```csharp
+using FoundationKit.Repository.Services;
+
+// 1. Declare the interface (optional but recommended)
+public interface IPersonService : IBaseRepository<Person>
+{
+    // Add domain-specific methods here if needed
+}
+
+// 2. Inherit BaseRepository and pass your DbContext + entity
+public class PersonService : BaseRepository<ApplicationDbContext, Person>, IPersonService
+{
+    public PersonService(ApplicationDbContext context) : base(context)
+    {
+    }
+}
+```
+
+Register the service in `Program.cs`:
+
+```csharp
+builder.Services.AddScoped<IPersonService, PersonService>();
+```
+
+Use it from a controller or handler:
+
+```csharp
+public class PeopleHandler
+{
+    private readonly IPersonService _service;
+
+    public PeopleHandler(IPersonService service) => _service = service;
+
+    public async Task<PaginationResult<Person>> ListAsync(Paginate paginate, CancellationToken ct)
+        => await _service.GetPaginatedListAsync(paginate, x => !x.IsDeleted, cancellationToken: ct);
+}
+```
+
+---
+
+## MapRepository
+
+`MapRepository<TContext, TEntity, TInputModel, TEditModel, TDtoModel>` adds AutoMapper to the mix. It requires five generic parameters: your DbContext, entity class, create-DTO type, update-DTO type, and read-DTO type. Every method that previously returned `TModel` now returns `TDtoModel`, and create/update methods accept `TInputModel`/`TEditModel` respectively. Internally, AutoMapper's `ProjectTo<TDtoModel>` is used on `IQueryable` so the SQL projection is pushed down to the database — only the columns needed by the DTO are selected.
+
+### Generic signature
+
+```csharp
+public abstract class MapRepository<TContext, TEntity, TInputModel, TEditModel, TDtoModel>
+    : IMapRepository<TEntity, TInputModel, TEditModel, TDtoModel>
+    where TContext    : DbContext
+    where TEntity     : BaseModel
+    where TInputModel : BaseInput
+    where TEditModel  : BaseEdit
+    where TDtoModel   : BaseOutput
+```
+
+### IMapRepository method surface
+
+| Method | Returns | Description |
+|---|---|---|
+| `GetAll(expression?, orderDesc, ordered?, includes[])` | `IQueryable<TDtoModel>` | Projected query on the DTO type using `ProjectTo`. |
+| `GetList(expression?, orderDesc, ordered?, ct, includes[])` | `Task<IEnumerable<TDtoModel>>` | Materialises a projected, filtered list. |
+| `GetPaginatedList(paginate, expression?, ordered?, ct, includes[])` | `Task<PaginationResult<TDtoModel>>` | Returns a projected paginated result set. |
+| `GetById(id, asNoTracking, ct, includes[])` | `Task<TDtoModel?>` | Fetches and projects a single entity by primary key. |
+| `GetOneAsync(expression, ct)` | `Task<TDtoModel?>` | Fetches and projects the first matching entity. |
+| `Exist(expression?, ct)` | `Task<bool>` | Returns `true` if any matching projected entity exists. |
+| `Count(ct, expressions[])` | `Task<int>` | Counts matching projected entities. |
+| `Create(input, ct)` | `Task<TDtoModel?>` | Maps `TInputModel → TEntity`, inserts, commits, returns `TDtoModel`. |
+| `Update(edit, ct, verifyEntity)` | `Task<TDtoModel?>` | Maps `TEditModel → TEntity`, updates, commits, returns `TDtoModel`. |
+| `UpdatePartialEntityAsync(entity, expressions, ct)` | `Task` | Marks only the listed properties as modified and saves (operates on the raw entity). |
+| `GetEntities(expression?)` | `IQueryable<TEntity>` | Bypasses projection; returns raw entity queryable for advanced use cases. |
+| `SoftRemove(id, ct)` | `Task<bool>` | Sets `IsDeleted = true` via a round-trip map and commits. |
+| `Remove(id, ct)` | `Task<bool>` | Physically deletes via a round-trip map and commits. |
+| `CommitAndResultAsync(ct)` | `Task<string?>` | Wraps `SaveChangesAsync` in a transaction; returns `null` on success or the error message on failure. |
+
+### Implementing MapRepository
+
+```csharp
+using AutoMapper;
+using FoundationKit.Repository.Services;
+
+// 1. Declare the interface
+public interface IPersonMapService
+    : IMapRepository<PersonInput, PersonEdit, PersonDto>
+{
+}
+
+// 2. Inherit MapRepository — inject both DbContext and IMapper
+public class PersonMapService
+    : MapRepository<ApplicationDbContext, Person, PersonInput, PersonEdit, PersonDto>,
+      IPersonMapService
+{
+    public PersonMapService(ApplicationDbContext context, IMapper mapper)
+        : base(context, mapper)
+    {
+    }
+}
+```
+
+Register the service and ensure your AutoMapper profile is in place:
+
+```csharp
+// Program.cs
+builder.Services.AddScoped<IPersonMapService, PersonMapService>();
+builder.Services.AddAutoMapper(typeof(PersonProfile));
+```
+
+```csharp
+// Mappings/PersonProfile.cs
+public class PersonProfile : Profile
+{
+    public PersonProfile()
+    {
+        CreateMap<Person, PersonDto>().ReverseMap();
+        CreateMap<Person, PersonInput>().ReverseMap();
+        CreateMap<Person, PersonEdit>().ReverseMap();
+    }
+}
+```
+
+<Tip>
+Prefer `MapRepository` for any service that is consumed directly by API controllers. Your controllers work with clean input/output DTOs and never touch the EF entity, which keeps your API contract decoupled from your database schema. Use `BaseRepository` for background jobs, domain event handlers, or internal services where the overhead of DTO mapping adds no value.
+</Tip>
+
+---
+
+## Transaction management
+
+Both `BaseRepository` and `MapRepository` implement the same transaction pattern inside every write operation. `CommitAsync` (called internally by `CreateAsync`, `UpdateAsync`, etc.) starts a database transaction, calls `SaveChangesAsync`, and commits. If anything throws, the transaction is rolled back and a `DbUpdateException` is re-thrown with the original base exception message.
+
+```csharp
+public async Task CommitAsync(CancellationToken cancellationToken = default)
+{
+    using var transaction = _context.Database.BeginTransaction();
+    try
+    {
+        await _context.SaveChangesAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
+    }
+    catch (Exception ex)
+    {
+        await transaction.RollbackAsync(cancellationToken);
+        throw new DbUpdateException(ex.GetBaseException().Message);
+    }
+}
+```
+
+When you want the exception to be returned as a string rather than thrown — useful for validation-style flows — call `CommitAndResultAsync` instead. It returns `null` on success and the error message string on failure, so you can surface it to the caller without a try/catch at the call site.
+
+---
+
+## Querying with GetAll
+
+`GetAll` is the foundation of every read operation in both repositories. It builds an `IQueryable` with four optional customisation points:
+
+```csharp
+// Filter to active records, order by Name ascending, eager-load related Address
+IQueryable<PersonDto> query = _personMapService.GetAll(
+    expression: x => !x.IsDeleted,                 // WHERE clause
+    orderDesc:  false,                              // ASC order
+    ordered:    x => x.Name,                        // ORDER BY Name
+    includes:   /* not applicable on DTO path */
+);
+```
+
+When no `ordered` expression is supplied, the default sort is `CreatedAt` descending (or ascending when `orderDesc` is `false`). Multiple `includes` expressions can be passed as a `params` array to add EF `Include()` calls for eager loading related entities (only meaningful for `BaseRepository` since `MapRepository` projects via AutoMapper).
+
+---
+
+## Soft-delete vs hard delete
+
+`SoftRemoveAsync` / `SoftRemove` flags a record as deleted without removing the row:
+
+```csharp
+// Sets IsDeleted = true, commits via transaction — row stays in the database
+bool removed = await _personService.SoftRemoveAsync(personId, ct);
+```
+
+`RemoveAsync` / `Remove` physically deletes the row:
+
+```csharp
+// Issues a real DELETE statement — row is gone permanently
+bool deleted = await _personService.RemoveAsync(personId, ct);
+```
+
+Always filter on `!x.IsDeleted` in your queries unless you explicitly want to include soft-deleted records (for example, in an admin audit view).
+
+---
+
+## Partial entity updates
+
+`UpdatePartialEntityAsync` uses EF Core's change-tracking API to mark only the properties you specify as modified. All other properties are left untouched in the database, which avoids the concurrency problems of a blind full-entity `UPDATE`.
+
+```csharp
+// Only the Name column will be written — all other columns are unchanged
+var person = new Person { Id = personId, Name = "Jane Doe" };
+
+await _personService.UpdatePartialEntityAsync(
+    person,
+    new List<Expression<Func<Person, object?>>>
+    {
+        x => x.Name
+    },
+    cancellationToken
+);
+```
+
+<Warning>
+When using `UpdatePartialEntityAsync`, the entity passed in must already be tracked by the current `DbContext` instance, or it must be attached first. Passing a detached entity without attaching it will result in EF Core tracking the new instance, and the `IsModified` flag will work correctly only if no conflicting tracked instance exists for the same primary key.
+</Warning>

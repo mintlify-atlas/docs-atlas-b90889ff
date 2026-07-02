@@ -1,0 +1,224 @@
+---
+title: "FoundationKit NuGet Packages: What to Install"
+sidebarTitle: "Packages"
+description: "FoundationKit ships as four independent NuGet packages. Learn what each one provides and which combination fits your project's requirements."
+---
+
+FoundationKit is designed as a modular suite rather than a single monolithic library. Each package has a single responsibility and explicit dependency boundaries, so you can pull in only what your project genuinely needs — a pure data-access layer for a background worker, the full controller stack for a REST API, or just the encryption and enum helpers for a utility library.
+
+<Note>
+  The project inside the repository is called `FoundationKit.Domain`, but the package is published to NuGet.org under the name **`FoundationKit.EntityFrameworkCore`**. Use the NuGet name when running `dotnet add package`.
+</Note>
+
+## Package Overview
+
+<CardGroup cols={2}>
+  <Card title="FoundationKit" icon="layer-group">
+    **Version:** 4.1.0  
+    The umbrella package that pulls in all three sibling packages as project references and adds the controller layer, encryption service, DI extension methods, and the optional AES middleware.
+
+    Key types: `ApiCoreController<TModel, TService>`, `ApiMapController<TService, TDto, TInput, TEdit>`, `MvcCoreController`, `IEncryptorService`, `EncryptorService`, `FoundationKitAesEncryptorMiddleware`.
+
+    Key extensions: `AddFoundationKit(Assembly)`, `AddFoundationKitEncryptor(EncryptorOption)`, `AddFoundationKitIdentity<TUser, TDbContext>()`, `AddFoundationKitIdentityWithMapper<TUser, TDbContext>(Assembly)`.
+  </Card>
+  <Card title="FoundationKit.EntityFrameworkCore" icon="database">
+    **Version:** 4.1.0  
+    Provides the base persistence primitives. Depends on `Microsoft.EntityFrameworkCore 8.0.4` and `Microsoft.AspNetCore.Identity.EntityFrameworkCore 8.0.4`.
+
+    Key types: `BaseModel` (Id, CreatedAt, UpdatedAt, IsDeleted, CreatedBy, UpdatedBy), `FoundationKitDbContext`, `FoundationKitIdentityDbContext<TUser>`, `EncryptorOption`, `FoundationKitStaticOptions`.
+  </Card>
+  <Card title="FoundationKit.Repository" icon="arrows-split-up-and-left">
+    **Version:** 4.1.0  
+    Generic repository abstractions and implementations. Depends on `FoundationKit.EntityFrameworkCore` and `AutoMapper 13.0.1`.
+
+    Key types: `IBaseRepository<TModel>`, `BaseRepository<TContext, TModel>`, `IMapRepository<TInput, TEdit, TDto>`, `MapRepository<TContext, TModel, TInput, TEdit, TDto>`, `PaginationResult<T>`, `Paginate`.
+  </Card>
+  <Card title="FoundationKit.Extensions" icon="puzzle-piece">
+    **Version:** 4.1.0  
+    Pure helpers with no EF Core dependency. Depends only on `FoundationKit.EntityFrameworkCore` (for shared value objects) and `Microsoft.AspNetCore.Mvc.ViewFeatures 2.2.0`.
+
+    Key types: `AesEncryptionHelper`, `AesConfig`, `CipherTweetNaCl`, `QueryableExtensions` (`PaginateAsync`, `Paginate`), `EnumExtension` (`GetDisplayName`), `ControllerExtensions` (`AesOk`).
+  </Card>
+</CardGroup>
+
+## Installation
+
+<CodeGroup>
+
+```bash Install all four packages
+dotnet add package FoundationKit
+dotnet add package FoundationKit.EntityFrameworkCore
+dotnet add package FoundationKit.Repository
+dotnet add package FoundationKit.Extensions
+```
+
+```bash Repository layer only
+dotnet add package FoundationKit.EntityFrameworkCore
+dotnet add package FoundationKit.Repository
+```
+
+```bash Extensions and helpers only
+dotnet add package FoundationKit.EntityFrameworkCore
+dotnet add package FoundationKit.Extensions
+```
+
+</CodeGroup>
+
+## Package Details
+
+### FoundationKit (Core)
+
+The umbrella package is the right choice when you are building a REST API and want the full suite — base controllers, encryption, and DI conveniences — in one install.
+
+**DI Registration methods**
+
+| Method | Purpose |
+|---|---|
+| `AddFoundationKit(Assembly)` | Registers AutoMapper profiles from your assembly |
+| `AddFoundationKitEncryptor(EncryptorOption, ServiceLifetime)` | Registers `IEncryptorService` with RSA/AES keys |
+| `AddFoundationKitIdentity<TUser, TDbContext>()` | Wires ASP.NET Core Identity without AutoMapper |
+| `AddFoundationKitIdentityWithMapper<TUser, TDbContext>(Assembly)` | Wires Identity and registers AutoMapper profiles |
+
+**Base controllers**
+
+`ApiCoreController<TModel, TService>` — use when your request/response type is the entity model itself:
+
+```csharp
+[Route("api/[controller]")]
+[ApiController]
+public abstract class ApiCoreController<TModel, TService> : ControllerBase
+    where TModel : BaseModel
+    where TService : IBaseRepository<TModel>
+```
+
+`ApiMapController<TService, TDtoModel, TInputModel, TEditModel>` — use when you separate input, edit, and output DTO types via AutoMapper:
+
+```csharp
+[Route("api/[controller]")]
+[ApiController]
+public abstract class ApiMapController<TService, TDtoModel, TInputModel, TEditModel> : ControllerBase
+    where TInputModel : BaseInput
+    where TDtoModel : BaseOutput
+    where TEditModel : BaseEdit
+    where TService : IMapRepository<TInputModel, TEditModel, TDtoModel>
+```
+
+---
+
+### FoundationKit.EntityFrameworkCore
+
+Provides the data model primitives and `DbContext` bases that every other package builds on.
+
+**`BaseModel`** — the abstract base all your entities must inherit:
+
+```csharp
+public abstract class BaseModel
+{
+    public virtual Guid Id { get; set; }
+    public virtual DateTime CreatedAt { get; set; }
+    public virtual DateTime? UpdatedAt { get; set; }   // override + [Column] to persist
+    public virtual bool IsDeleted { get; set; }
+    public virtual string? CreatedBy { get; set; }
+    public virtual string? UpdatedBy { get; set; }
+
+    [NotMapped] public string CreatedAtStr => CreatedAt.ToString("dd/MM/yyyy hh:mm:ss");
+    [NotMapped] public string UpdateAtStr  => ...;
+}
+```
+
+**`FoundationKitDbContext`** — inherit to get automatic `CreatedAt` / `UpdatedAt` stamping and soft-delete query filters:
+
+```csharp
+public class ApplicationDbContext : FoundationKitDbContext
+{
+    public ApplicationDbContext(DbContextOptions<ApplicationDbContext> options)
+        : base(options) { }
+
+    public DbSet<Person> Persons { get; set; }
+}
+```
+
+---
+
+### FoundationKit.Repository
+
+Provides both a direct entity repository and a DTO-mapped repository.
+
+**`IBaseRepository<TModel>` — full interface surface:**
+
+| Method | Signature |
+|---|---|
+| `CreateAsync` | `Task<TModel> CreateAsync(TModel, CancellationToken)` |
+| `UpdateAsync` | `Task<TModel?> UpdateAsync(TModel, CancellationToken, bool verifyEntity)` |
+| `UpdatePartialEntityAsync` | `Task UpdatePartialEntityAsync(TModel, List<Expression<Func<TModel, object?>>>, CancellationToken)` |
+| `GetByIdAsync` | `Task<TModel?> GetByIdAsync(Guid, bool asNoTracking, CancellationToken, params includes)` |
+| `GetAll` | `IQueryable<TModel> GetAll(expression, orderDesc, ordered, params includes)` |
+| `GetListAsync` | `Task<IEnumerable<TModel>> GetListAsync(orderDesc, expression, ordered, CancellationToken, params includes)` |
+| `GetPaginatedListAsync` | `Task<PaginationResult<TModel>> GetPaginatedListAsync(Paginate, expression, ordered, CancellationToken, params includes)` |
+| `GetOneAsync` | `Task<TModel?> GetOneAsync(Expression<Func<TModel, bool>>, CancellationToken)` |
+| `ExistAsync` | `Task<bool> ExistAsync(expression, CancellationToken)` |
+| `CountAsync` | `Task<int> CountAsync(CancellationToken, params expressions)` |
+| `SoftRemoveAsync` | `Task<bool> SoftRemoveAsync(Guid, CancellationToken)` |
+| `RemoveAsync` | `Task<bool> RemoveAsync(Guid, CancellationToken)` |
+| `CommitAsync` | `Task CommitAsync(CancellationToken)` |
+| `CommitAndResultAsync` | `Task<string?> CommitAndResultAsync(CancellationToken)` — returns null on success, error message on failure |
+
+**`Paginate`** — query string model consumed by `GetPaginatedListAsync` and `ApiCoreController`:
+
+| Property | Type | Default | Description |
+|---|---|---|---|
+| `Page` | `int` | `1` | Current page number |
+| `Qyt` | `int` | `10` | Items per page |
+| `OrderByDesc` | `bool` | `true` | Sort direction |
+| `NoPaginate` | `bool` | `false` | Return all records when `true` |
+
+---
+
+### FoundationKit.Extensions
+
+Independent helper types that can be used in any .NET 8 project regardless of whether EF Core or the controller layer is present.
+
+**AES Encryption**
+
+```csharp
+// AesConfig holds Key and Iv as Base64 strings
+var config = new AesConfig { Key = "...", Iv = "..." };
+string encrypted = AesEncryptionHelper.Encrypt("plaintext", config);
+string decrypted = AesEncryptionHelper.Decrypt(encrypted, config);
+```
+
+**TweetNaCl Cipher (`CipherTweetNaCl`)**
+
+Provides asymmetric key-pair generation, encryption, decryption, signing, and signature verification via a managed TweetNaCl implementation. Suitable for peer-to-peer message authentication.
+
+**`QueryableExtensions`**
+
+```csharp
+// Paginate any IQueryable<T> without a repository
+var result = await myQuery.PaginateAsync(new Paginate { Page = 1, Qyt = 20 }, cancellationToken);
+// result.Results, result.Total, result.PageTotal, result.ActualPage
+```
+
+**`EnumExtension`**
+
+```csharp
+// Returns the [Display(Name = "...")] attribute value, or the enum name as fallback
+string label = MyEnum.ActiveUser.GetDisplayName();
+```
+
+---
+
+## Choosing the Right Combination
+
+| Scenario | Packages to install |
+|---|---|
+| **Full REST API** — controllers, CRUD, pagination, encryption | `FoundationKit` (pulls in all others) |
+| **API without encryption or Identity** | `FoundationKit`, `FoundationKit.EntityFrameworkCore`, `FoundationKit.Repository` |
+| **Background worker / data-access only** | `FoundationKit.EntityFrameworkCore`, `FoundationKit.Repository` |
+| **API with ASP.NET Core Identity** | `FoundationKit` + call `AddFoundationKitIdentity` or `AddFoundationKitIdentityWithMapper` |
+| **Utility library — enum helpers, AES, pagination only** | `FoundationKit.Extensions` (+ `FoundationKit.EntityFrameworkCore` for shared value objects) |
+| **DTO-mapped repository with AutoMapper** | `FoundationKit.Repository`, `FoundationKit.EntityFrameworkCore` + configure AutoMapper profiles |
+
+<Tip>
+  Installing the umbrella `FoundationKit` package is the fastest path for new REST API projects. If package size or dependency footprint matters — for example in a Lambda or Azure Function — install `FoundationKit.Repository` and `FoundationKit.EntityFrameworkCore` directly and skip the controller layer.
+</Tip>
