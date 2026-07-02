@@ -13,13 +13,13 @@ By the end of this guide you will have a fully working ASP.NET Core Web API that
 
     ```bash
     dotnet add package FoundationKit
-    dotnet add package FoundationKit.EntityFrameworkCore
+    dotnet add package FoundationKit.Domain
     dotnet add package FoundationKit.Repository
-    dotnet add package FoundationKit.Extensions
+    dotnet add package Foundationkit.Extensions
     ```
 
     <Tip>
-      If your project only needs the repository pattern without the base controllers or encryption service, you can install `FoundationKit.Repository` and `FoundationKit.EntityFrameworkCore` alone and skip the umbrella package.
+      If your project only needs the repository pattern without the base controllers or encryption service, you can install `FoundationKit.Repository` and `FoundationKit.Domain` alone and skip the umbrella package.
     </Tip>
   </Step>
 
@@ -35,10 +35,6 @@ By the end of this guide you will have a fully working ASP.NET Core Web API that
     public class Person : BaseModel
     {
         public string? Name { get; set; }
-
-        // Override and mark [NotMapped] for any base property you don't need persisted
-        [NotMapped]
-        public override string? CreatedBy { get; set; }
     }
     ```
 
@@ -99,7 +95,7 @@ By the end of this guide you will have a fully working ASP.NET Core Web API that
     using FoundationKit.Repository.Interfaces;
     using MyApp.Domain.Models;
 
-    namespace MyApp.Infrastructure.Interfaces;
+    namespace MyApp.Application.Interfaces;
 
     public interface IPersonService : IBaseRepository<Person>
     {
@@ -112,7 +108,7 @@ By the end of this guide you will have a fully working ASP.NET Core Web API that
     using FoundationKit.Repository.Services;
     using MyApp.Domain.Models;
     using MyApp.Domain.Persistence;
-    using MyApp.Infrastructure.Interfaces;
+    using MyApp.Application.Interfaces;
 
     namespace MyApp.Infrastructure.Services;
 
@@ -134,7 +130,7 @@ By the end of this guide you will have a fully working ASP.NET Core Web API that
     using FoundationKit.Extensions;
     using System.Reflection;
     using MyApp.Domain.Persistence;
-    using MyApp.Infrastructure.Interfaces;
+    using MyApp.Application.Interfaces;
     using MyApp.Infrastructure.Services;
 
     AppContext.SetSwitch("Npgsql.EnableLegacyTimestampBehavior", true);
@@ -190,7 +186,7 @@ By the end of this guide you will have a fully working ASP.NET Core Web API that
     ```csharp
     using FoundationKit.Core.Controllers;
     using MyApp.Domain.Models;
-    using MyApp.Infrastructure.Interfaces;
+    using MyApp.Application.Interfaces;
 
     namespace MyApp.Controllers;
 

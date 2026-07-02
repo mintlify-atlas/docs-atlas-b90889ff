@@ -1,7 +1,7 @@
 ---
-title: "IMapRepository<TInput, TEdit, TDto> — AutoMapper Repository Interface"
+title: "IMapRepository — AutoMapper Repository Interface"
 sidebarTitle: "IMapRepository"
-description: "IMapRepository defines CRUD operations that map between entity, input, edit, and output DTO types using AutoMapper — the core contract for MapRepository."
+description: "IMapRepository defines CRUD operations mapping between entity, input, edit, and output DTO types via AutoMapper — the core contract for MapRepository."
 ---
 
 `IMapRepository` is FoundationKit's AutoMapper-aware repository interface. Where `IBaseRepository<TModel>` works directly with entity types, `IMapRepository` accepts strongly-typed input DTOs (`TInputModel`), edit DTOs (`TEditModel`), and projects query results directly to output DTOs (`TDtoModel`) — keeping your controllers and service layer completely free of entity types. Every operation accepts or returns the appropriate DTO, and AutoMapper handles all translation between the wire layer and the database layer transparently.
@@ -182,10 +182,14 @@ Task<TDtoModel?> Create(TInputModel model, CancellationToken cancellationToken =
 
 ### Update
 
-Maps a `TEditModel` to the underlying entity and persists the update. When `verifyEntity` is `true`, the repository fetches the current DTO first to preserve `CreatedBy` and `CreatedAt` audit fields.
+Maps a `TEditModel` to the underlying entity and persists the update. Two overloads are available: one that exposes the `verifyEntity` flag, and a convenience overload that omits it (equivalent to calling the full overload with `verifyEntity: false`). When `verifyEntity` is `true`, the repository fetches the current DTO first to preserve `CreatedBy` and `CreatedAt` audit fields.
 
 ```csharp
+// Full overload — controls the pre-fetch behaviour
 Task<TDtoModel?> Update(TEditModel model, CancellationToken cancellationToken = default, bool verifyEntity = true);
+
+// Convenience overload — equivalent to verifyEntity: false
+Task<TDtoModel?> Update(TEditModel model, CancellationToken cancellationToken = default);
 ```
 
 <ParamField path="model" type="TEditModel" required>
@@ -197,7 +201,7 @@ Task<TDtoModel?> Update(TEditModel model, CancellationToken cancellationToken = 
 </ParamField>
 
 <ParamField path="verifyEntity" type="bool" default="true">
-  When `true`, performs a `GetById` before updating to copy immutable audit fields (`CreatedBy`, `CreatedAt`) from the existing record onto the edit model. Set to `false` to skip the pre-fetch if you have pre-populated those fields yourself.
+  When `true`, performs a `GetById` before updating to copy immutable audit fields (`CreatedBy`, `CreatedAt`) from the existing record onto the edit model. Set to `false` to skip the pre-fetch if you have pre-populated those fields yourself. The two-parameter convenience overload always behaves as if `verifyEntity` is `false`.
 </ParamField>
 
 <ResponseField name="TDtoModel?" type="Task">
@@ -213,7 +217,7 @@ Fetches a single entity by primary key (`Guid`) and projects it to `TDtoModel`.
 ```csharp
 Task<TDtoModel?> GetById(
     Guid id,
-    bool asNotTracking = false,
+    bool asNotTraking = false,
     CancellationToken cancellationToken = default,
     params Expression<Func<TDtoModel, object>>[] includes);
 ```
@@ -222,7 +226,7 @@ Task<TDtoModel?> GetById(
   The primary key of the record to fetch.
 </ParamField>
 
-<ParamField path="asNotTracking" type="bool" default="false">
+<ParamField path="asNotTraking" type="bool" default="false">
   When `true`, the query is executed with `AsNoTracking()`. Useful for read-only operations to reduce EF Core overhead.
 </ParamField>
 

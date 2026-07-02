@@ -1,7 +1,7 @@
 ---
-title: "Configure EF Core with FoundationKit DbContext"
+title: "EF Core Setup with FoundationKit DbContext and Filters"
 sidebarTitle: "EF Core Setup"
-description: "Set up FoundationKitDbContext or FoundationKitIdentityDbContext to get automatic timestamp tracking, soft-delete query filters, and migration support in your ASP.NET Core app."
+description: "Set up FoundationKitDbContext or FoundationKitIdentityDbContext to get automatic timestamp tracking, soft-delete query filters, and migration support."
 ---
 
 FoundationKit wraps EF Core with two abstract `DbContext` base classes that automatically stamp `CreatedAt` and `UpdatedAt` on every `BaseModel` entity, and an `EFCoreConfiguration<TEntity>` base class that applies a global soft-delete query filter — so deleted rows are always invisible to normal queries without any extra effort.

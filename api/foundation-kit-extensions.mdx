@@ -1,7 +1,7 @@
 ---
 title: "FoundationKitExtensions — DI Registration Methods"
 sidebarTitle: "DI Extensions"
-description: "IServiceCollection extension methods for registering FoundationKit: AddFoundationKit, AddFoundationKitIdentity, AddFoundationKitIdentityWithMapper, and AddFoundationKitEncryptor."
+description: "IServiceCollection extension methods for registering FoundationKit features: AutoMapper, ASP.NET Core Identity, and the AES/TweetNaCl encryption service."
 ---
 
 `FoundationKitExtensions` is a static class in the `FoundationKit.Extensions` namespace that exposes a set of `IServiceCollection` extension methods for bootstrapping FoundationKit features. Each method wires up a specific subset of functionality — AutoMapper profiles, ASP.NET Core Identity, or the encryption service — so you only register what your application actually needs.

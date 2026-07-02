@@ -1,7 +1,7 @@
 ---
 title: "Repository Pattern in FoundationKit: BaseRepository and MapRepository"
 sidebarTitle: "Repositories"
-description: "FoundationKit provides two generic EF Core repository base classes: BaseRepository for direct entity access, and MapRepository for AutoMapper-powered DTO projection."
+description: "FoundationKit ships two generic EF Core repository classes: BaseRepository for direct entity access and MapRepository for AutoMapper DTO projection."
 ---
 
 FoundationKit ships two abstract repository base classes so you can choose the right level of abstraction for each service in your application. `BaseRepository` works directly with your EF Core entity type and is the simplest starting point — every method accepts and returns the entity class itself. `MapRepository` adds an AutoMapper layer on top, translating between your input DTOs, edit DTOs, and output DTOs transparently, which makes it the natural choice for API services that expose a separate public contract from the database schema. Both classes sit in `FoundationKit.Repository.Services` and provide an identical surface area of CRUD, pagination, soft-delete, partial update, and transaction management — you choose which one to inherit based on whether your service layer should deal in entities or DTOs.
@@ -26,13 +26,14 @@ public abstract class BaseRepository<TContext, TModel> : IBaseRepository<TModel>
 |---|---|---|
 | `GetAll(expression?, orderDesc, ordered?, includes[])` | `IQueryable<TModel>` | Composable query with optional filter, ordering, and eager-load includes. |
 | `GetListAsync(orderDesc, expression?, ordered?, ct, includes[])` | `Task<IEnumerable<TModel>>` | Materialises a filtered, ordered list. |
-| `GetPaginatedListAsync(paginate, expression?, ordered?, ct, includes[])` | `Task<PaginationResult<TModel>>` | Returns a paginated result set. |
-| `GetByIdAsync(id, asNoTracking, ct, includes[])` | `Task<TModel?>` | Fetches a single entity by primary key. |
+| `GetPaginatedListAsync(paginate, expression?, ordered?, ct, includes[])` | `Task<PaginationResult<TModel>>` | Returns a paginated result set. Respects `Paginate.NoPaginate`. |
+| `GetByIdAsync(id, asNotTraking, ct, includes[])` | `Task<TModel?>` | Fetches a single entity by primary key. |
 | `GetOneAsync(expression, ct)` | `Task<TModel?>` | Fetches the first entity matching a predicate. |
 | `ExistAsync(expression?, ct)` | `Task<bool>` | Returns `true` if any matching entity exists. |
 | `CountAsync(ct, expressions[])` | `Task<int>` | Counts entities matching zero or more predicates. |
 | `CreateAsync(model, ct)` | `Task<TModel>` | Adds the entity and commits a transaction. |
 | `UpdateAsync(model, ct, verifyEntity)` | `Task<TModel?>` | Replaces the entity and commits. When `verifyEntity=true`, the original `CreatedBy`/`CreatedAt` are preserved. |
+| `UpdateAsync(model, ct)` | `Task<TModel?>` | Overload that calls `UpdateAsync(model, ct, verifyEntity: false)`. |
 | `UpdatePartialEntityAsync(entity, expressions, ct)` | `Task` | Marks only the listed property expressions as modified and saves. |
 | `SoftRemoveAsync(id, ct)` | `Task<bool>` | Sets `IsDeleted = true` and commits. |
 | `RemoveAsync(id, ct)` | `Task<bool>` | Physically deletes the row and commits. |
@@ -98,22 +99,32 @@ public abstract class MapRepository<TContext, TEntity, TInputModel, TEditModel, 
 
 ### IMapRepository method surface
 
+`IMapRepository<TInputModel, TEditModel, TDtoModel>` defines the core contract. The extended `IMapRepository<T, TInputModel, TEditModel, TDtoModel>` adds two additional members for raw-entity access.
+
+**Core interface — `IMapRepository<TInputModel, TEditModel, TDtoModel>`**
+
 | Method | Returns | Description |
 |---|---|---|
 | `GetAll(expression?, orderDesc, ordered?, includes[])` | `IQueryable<TDtoModel>` | Projected query on the DTO type using `ProjectTo`. |
 | `GetList(expression?, orderDesc, ordered?, ct, includes[])` | `Task<IEnumerable<TDtoModel>>` | Materialises a projected, filtered list. |
 | `GetPaginatedList(paginate, expression?, ordered?, ct, includes[])` | `Task<PaginationResult<TDtoModel>>` | Returns a projected paginated result set. |
-| `GetById(id, asNoTracking, ct, includes[])` | `Task<TDtoModel?>` | Fetches and projects a single entity by primary key. |
+| `GetById(id, asNotTraking, ct, includes[])` | `Task<TDtoModel?>` | Fetches and projects a single entity by primary key. |
 | `GetOneAsync(expression, ct)` | `Task<TDtoModel?>` | Fetches and projects the first matching entity. |
 | `Exist(expression?, ct)` | `Task<bool>` | Returns `true` if any matching projected entity exists. |
 | `Count(ct, expressions[])` | `Task<int>` | Counts matching projected entities. |
 | `Create(input, ct)` | `Task<TDtoModel?>` | Maps `TInputModel → TEntity`, inserts, commits, returns `TDtoModel`. |
 | `Update(edit, ct, verifyEntity)` | `Task<TDtoModel?>` | Maps `TEditModel → TEntity`, updates, commits, returns `TDtoModel`. |
-| `UpdatePartialEntityAsync(entity, expressions, ct)` | `Task` | Marks only the listed properties as modified and saves (operates on the raw entity). |
-| `GetEntities(expression?)` | `IQueryable<TEntity>` | Bypasses projection; returns raw entity queryable for advanced use cases. |
+| `Update(edit, ct)` | `Task<TDtoModel?>` | Overload that calls `Update(edit, ct, verifyEntity: false)`. |
 | `SoftRemove(id, ct)` | `Task<bool>` | Sets `IsDeleted = true` via a round-trip map and commits. |
 | `Remove(id, ct)` | `Task<bool>` | Physically deletes via a round-trip map and commits. |
 | `CommitAndResultAsync(ct)` | `Task<string?>` | Wraps `SaveChangesAsync` in a transaction; returns `null` on success or the error message on failure. |
+
+**Extended interface — `IMapRepository<T, TInputModel, TEditModel, TDtoModel>`**
+
+| Method | Returns | Description |
+|---|---|---|
+| `GetEntities(expression?)` | `IQueryable<T>` | Bypasses projection; returns the raw entity queryable for advanced use cases. |
+| `UpdatePartialEntityAsync(entity, expressions, ct)` | `Task` | Marks only the listed properties as modified and saves (operates on the raw entity). |
 
 ### Implementing MapRepository
 
@@ -200,8 +211,7 @@ When you want the exception to be returned as a string rather than thrown — us
 IQueryable<PersonDto> query = _personMapService.GetAll(
     expression: x => !x.IsDeleted,                 // WHERE clause
     orderDesc:  false,                              // ASC order
-    ordered:    x => x.Name,                        // ORDER BY Name
-    includes:   /* not applicable on DTO path */
+    ordered:    x => x.Name                         // ORDER BY Name
 );
 ```
 

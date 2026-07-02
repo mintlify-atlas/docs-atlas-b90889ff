@@ -1,7 +1,7 @@
 ---
-title: "IBaseRepository<TModel> — FoundationKit Repository Interface"
+title: "IBaseRepository<TModel> — FoundationKit Repository"
 sidebarTitle: "IBaseRepository"
-description: "IBaseRepository defines the full CRUD contract for entity repositories: paginated list, create, update, partial update, delete, soft-delete, and count."
+description: "IBaseRepository defines the full CRUD contract for entity repositories: paginated list, create, update, partial update, soft-delete, and count."
 ---
 
 `IBaseRepository<TModel>` is the core interface that establishes the full data-access contract for any entity-based repository in FoundationKit. By programming against this interface rather than a concrete class, your application code stays decoupled from EF Core specifics — swap out the backing store, apply decorators, or mock the interface in unit tests without touching business logic. Every method returns an awaitable `Task` (or an `IQueryable` for composable queries), and all async methods accept a `CancellationToken` so callers can respect request cancellation gracefully.
@@ -78,7 +78,7 @@ Task<IEnumerable<TModel>> GetListAsync(
 </ParamField>
 
 <ParamField path="expression" type="Expression<Func<TModel, bool>>?" default="null">
-  Optional filter predicate. Pass `null` to retrieve all non-soft-deleted records.
+  Optional filter predicate. Pass `null` to retrieve all records.
 </ParamField>
 
 <ParamField path="ordered" type="Expression<Func<TModel, object>>?" default="null">
@@ -157,10 +157,14 @@ Task<TModel> CreateAsync(TModel model, CancellationToken cancellationToken = def
 
 ### UpdateAsync
 
-Updates an existing entity. When `verifyEntity` is `true` (the default), the repository first fetches the current entity from the database to preserve the original `CreatedBy` and `CreatedAt` audit fields before applying the update.
+Updates an existing entity. Two overloads are available: one that exposes the `verifyEntity` flag, and a convenience overload that omits it (equivalent to calling the full overload with `verifyEntity: false`). When `verifyEntity` is `true` (the default on the full overload), the repository first fetches the current entity from the database to preserve the original `CreatedBy` and `CreatedAt` audit fields before applying the update.
 
 ```csharp
+// Full overload — controls the pre-fetch behaviour
 Task<TModel?> UpdateAsync(TModel model, CancellationToken cancellationToken = default, bool verifyEntity = true);
+
+// Convenience overload — equivalent to verifyEntity: false
+Task<TModel?> UpdateAsync(TModel model, CancellationToken cancellationToken = default);
 ```
 
 <ParamField path="model" type="TModel" required>
@@ -172,7 +176,7 @@ Task<TModel?> UpdateAsync(TModel model, CancellationToken cancellationToken = de
 </ParamField>
 
 <ParamField path="verifyEntity" type="bool" default="true">
-  When `true`, the repository looks up the existing record first and copies `CreatedBy` / `CreatedAt` from it before calling `Update`. Set to `false` to skip the pre-fetch if you are certain the audit fields are already correct on the supplied model.
+  When `true`, the repository looks up the existing record first and copies `CreatedBy` / `CreatedAt` from it before calling `Update`. Set to `false` to skip the pre-fetch if you are certain the audit fields are already correct on the supplied model. The two-parameter convenience overload always behaves as if `verifyEntity` is `false`.
 </ParamField>
 
 <ResponseField name="TModel?" type="Task">
@@ -217,7 +221,7 @@ Fetches a single entity by its primary key (`Guid`), with optional eager loading
 ```csharp
 Task<TModel?> GetByIdAsync(
     Guid id,
-    bool asNotTracking = false,
+    bool asNotTraking = false,
     CancellationToken cancellationToken = default,
     params Expression<Func<TModel, object>>[] includes);
 ```
@@ -226,7 +230,7 @@ Task<TModel?> GetByIdAsync(
   The primary key (`BaseModel.Id`) of the entity to retrieve.
 </ParamField>
 
-<ParamField path="asNotTracking" type="bool" default="false">
+<ParamField path="asNotTraking" type="bool" default="false">
   When `true`, the entity is returned without being added to the EF Core change tracker. Suitable for read-only scenarios where you do not intend to update the entity.
 </ParamField>
 
@@ -343,14 +347,14 @@ Returns the number of entities that satisfy all supplied predicates. Multiple ex
 ```csharp
 Task<int> CountAsync(
     CancellationToken cancellationToken = default,
-    params Expression<Func<TModel, bool>>[] expressions);
+    params Expression<Func<TModel, bool>>[] expression);
 ```
 
 <ParamField path="cancellationToken" type="CancellationToken" default="default">
   Propagates cancellation.
 </ParamField>
 
-<ParamField path="expressions" type="params Expression<Func<TModel, bool>>[]">
+<ParamField path="expression" type="params Expression<Func<TModel, bool>>[]">
   Zero or more filter predicates. Passing no expressions counts all rows in the table.
 </ParamField>
 

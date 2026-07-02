@@ -1,7 +1,7 @@
 ---
-title: "Paginate and PaginationResult — Pagination Types Reference"
+title: "Paginate and PaginationResult — Pagination Reference"
 sidebarTitle: "Pagination"
-description: "Paginate is the query model for all list endpoints. PaginationResult<T> is the standard paginated response wrapper returned by all FoundationKit list methods."
+description: "Paginate carries paging intent as query-string fields. PaginationResult wraps responses with metadata. QueryableExtensions applies both to any IQueryable."
 ---
 
 Consistent pagination is one of the first things every API needs and one of the
@@ -25,11 +25,11 @@ namespace FoundationKit.Domain.Dtos.Paginations;
 
 public class Paginate
 {
-    [FromQuery] public int    Page        { get; set; } = 1;
-    [FromQuery] public int    Qyt         { get; set; } = 10;
-    [FromQuery] public bool   OrderByDesc { get; set; }
-    [FromQuery] public bool   NoPaginate  { get; set; }
-    [FromQuery] public string? Query      { get; set; }
+    [FromQuery] public int     Page        { get; set; } = 1;
+    [FromQuery] public int     Qyt         { get; set; } = 10;
+    [FromQuery] public bool    OrderByDesc { get; set; }
+    [FromQuery] public bool    NoPaginate  { get; set; }
+    [FromQuery] public string? Query       { get; set; }
 }
 ```
 
@@ -94,45 +94,44 @@ namespace FoundationKit.Domain.Dtos.Paginations;
 
 public class PaginationResult<T>
 {
-    public int  ActualPage { get; set; } = 1;
-    public int  Qyt        { get; set; }
-    public int  PageTotal  { get; set; }
-    public int  Total      { get; set; }
-    public string? Query   { get; set; }
+    public int     ActualPage { get; set; } = 1;
+    public int     Qyt        { get; set; }
+    public int     PageTotal  { get; set; }
+    public int     Total      { get; set; }
+    public string? Query      { get; set; }
     public virtual IReadOnlyCollection<T>? Results { get; set; }
 }
 ```
 
 ### Properties
 
-<ResponseField name="actualPage" type="int" required>
+<ResponseField name="ActualPage" type="int">
   The page number that was returned. Echoes back the `Page` value from the
   inbound `Paginate` request so clients can detect off-by-one or clamping
-  behaviour server-side.
+  behaviour server-side. Defaults to `1`.
 </ResponseField>
 
-<ResponseField name="qyt" type="int" required>
+<ResponseField name="Qyt" type="int">
   The page size that was applied. Echoes back the `Qyt` value from the
   inbound `Paginate` request.
 </ResponseField>
 
-<ResponseField name="pageTotal" type="int" required>
+<ResponseField name="PageTotal" type="int">
   The total number of pages available given the current `Qyt` and the full
-  record count. Computed as `Math.Ceiling(Total / (double)Qyt)`. When
-  `NoPaginate` was `true` this value is `1`.
+  record count. Computed as `Math.Ceiling(Total / Qyt)`.
 </ResponseField>
 
-<ResponseField name="total" type="int" required>
+<ResponseField name="Total" type="int">
   The total number of records that match the query, before paging is applied.
   Use this field to render pagination controls on the client.
 </ResponseField>
 
-<ResponseField name="query" type="string">
+<ResponseField name="Query" type="string?">
   The search term echoed from the inbound `Paginate` request, or `null` if no
   search term was provided.
 </ResponseField>
 
-<ResponseField name="results" type="IReadOnlyCollection<T>">
+<ResponseField name="Results" type="IReadOnlyCollection&lt;T&gt;?">
   The page of items. Declared `virtual` so derived response classes can
   override the property to attach additional JSON serialisation attributes
   or perform post-processing. `null` when the query matched no records.
@@ -152,14 +151,12 @@ public class PaginationResult<T>
       "id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
       "firstName": "John",
       "lastName": "Smith",
-      "createdAt": "2024-03-15T09:22:11Z",
       "createdAtStr": "15/03/2024 09:22:11"
     },
     {
       "id": "7cb92e41-1234-4562-b3fc-9d812a44bbc1",
       "firstName": "Jane",
       "lastName": "Smith",
-      "createdAt": "2024-04-01T14:05:33Z",
       "createdAtStr": "01/04/2024 02:05:33"
     }
   ]
@@ -177,34 +174,34 @@ into the correct `Skip` / `Take` / `Count` operations against any
 ### PaginateAsync (asynchronous)
 
 ```csharp
-Task<PaginationResult<TSource>> PaginateAsync<TSource>(
-    this IQueryable<TSource> source,
+Task<PaginationResult<TSource?>> PaginateAsync<TSource>(
+    this IQueryable<TSource> items,
     Paginate paginate,
     CancellationToken cancellationToken = default)
 ```
 
-Executes two database round-trips: one `CountAsync` for the total and one
-`ToListAsync` for the page of results. Returns a fully populated
-`PaginationResult<TSource>`.
+Executes a synchronous `Count()` for the total, then an async `ToListAsync`
+for the page of results. Returns a fully populated `PaginationResult<TSource?>`.
 
 ### Paginate (synchronous)
 
 ```csharp
-PaginationResult<TSource> Paginate<TSource>(
-    this IQueryable<TSource> source,
+PaginationResult<TSource?> Paginate<TSource>(
+    this IQueryable<TSource> items,
     Paginate paginate)
 ```
 
-Synchronous equivalent. Use in contexts where async is unavailable, such as
-within `IEnumerable` processing pipelines, but prefer the async overload
-in ASP.NET Core request handlers to avoid blocking thread-pool threads.
+Synchronous equivalent. Use in contexts where async is unavailable, but prefer
+the async overload in ASP.NET Core request handlers to avoid blocking
+thread-pool threads.
 
 ### Usage in a repository
 
 ```csharp
+using Foundationkit.Extensions.Enumerations;
 using FoundationKit.Domain.Dtos.Paginations;
 
-public async Task<PaginationResult<PersonOutput>> GetPeopleAsync(
+public async Task<PaginationResult<PersonOutput?>> GetPeopleAsync(
     Paginate paginate,
     CancellationToken ct = default)
 {
@@ -227,7 +224,6 @@ public async Task<PaginationResult<PersonOutput>> GetPeopleAsync(
             Id           = p.Id,
             FirstName    = p.FirstName,
             LastName     = p.LastName,
-            CreatedAt    = p.CreatedAt,
             CreatedAtStr = p.CreatedAtStr
         })
         .PaginateAsync(paginate, ct);
@@ -254,20 +250,20 @@ configuration.
 
 ---
 
-## NoPaginate — full-result export mode
+## NoPaginate — full-result mode
 
 <Note>
   Setting `NoPaginate = true` instructs the extension methods to skip
-  `Skip`/`Take` entirely. The `PaginationResult<T>` returned will have
-  `ActualPage = 1`, `PageTotal = 1`, and `Total` equal to the full record
-  count. This is intentional — the structure remains consistent so clients
-  can handle both paged and non-paged responses with the same deserialization
-  code.
+  `Skip`/`Take` entirely and return only the `Results` collection. When
+  `NoPaginate` is `true`, the returned `PaginationResult<T>` will have
+  `ActualPage = 1` (the property default) and `Qyt`, `PageTotal`, and `Total`
+  all equal to `0`, because those counts are not computed. Only `Results`
+  is populated.
 
   Typical use cases for `NoPaginate`:
   - Generating CSV / Excel exports
   - Feeding server-side report renderers
-  - Populating `<select>` dropdown lists with small reference datasets
+  - Populating dropdown lists with small reference datasets
 
   Always apply appropriate data-size guards (row-count limits, authorization
   checks, or background jobs) before exposing `NoPaginate` to untrusted

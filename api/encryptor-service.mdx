@@ -1,7 +1,7 @@
 ---
 title: "IEncryptorService — Encryption and Decryption API"
 sidebarTitle: "IEncryptorService"
-description: "IEncryptorService provides TweetNaCl/Curve25519 asymmetric encryption and AES symmetric encryption methods, plus a controller extension for encrypted HTTP responses."
+description: "IEncryptorService reference: TweetNaCl/Curve25519 asymmetric and AES-CBC symmetric encryption, AesOk controller helper, and the AES decryptor middleware."
 ---
 
 `IEncryptorService` is the central encryption abstraction in FoundationKit. It exposes two complementary encryption strategies: **TweetNaCl/Curve25519 asymmetric encryption** (via `CryptoBoxAfternm`) for protecting small payloads such as per-request AES configurations, and **AES-CBC symmetric encryption** for efficiently encrypting larger request and response bodies. Register it via [`AddFoundationKitEncryptor`](/api/foundation-kit-extensions#addfoundationkitencryptor) and inject it wherever encryption or decryption is required.

@@ -35,13 +35,13 @@ FoundationKit is intentionally split into four separate NuGet packages, each wit
   <Card title="FoundationKit" icon="layer-group">
     The umbrella package. Provides `ApiCoreController`, `ApiMapController`, the `EncryptorService` (RSA + AES), DI extension methods (`AddFoundationKit`, `AddFoundationKitEncryptor`, `AddFoundationKitIdentity`), and the AES middleware. Depends on the three packages below.
   </Card>
-  <Card title="FoundationKit.EntityFrameworkCore" icon="database">
-    Published as **FoundationKit.EntityFrameworkCore** on NuGet (the solution project is named `FoundationKit.Domain`). Provides `BaseModel`, `FoundationKitDbContext`, `FoundationKitIdentityDbContext`, and EF Core configuration helpers backed by `Microsoft.EntityFrameworkCore 8.0.4`.
+  <Card title="FoundationKit.Domain" icon="database">
+    Published as **FoundationKit.Domain** on NuGet. Provides `BaseModel`, `FoundationKitDbContext`, `FoundationKitIdentityDbContext`, and EF Core configuration helpers backed by `Microsoft.EntityFrameworkCore 8.0.4`.
   </Card>
   <Card title="FoundationKit.Repository" icon="arrows-split-up-and-left">
-    Provides `IBaseRepository<TModel>`, `BaseRepository<TContext, TModel>`, `IMapRepository`, `MapRepository`, and the `PaginationResult<T>` / `Paginate` value objects. Depends only on `FoundationKit.EntityFrameworkCore` and `AutoMapper 13.0.1`.
+    Provides `IBaseRepository<TModel>`, `BaseRepository<TContext, TModel>`, `IMapRepository`, `MapRepository`, and the `PaginationResult<T>` / `Paginate` value objects. Depends only on `FoundationKit.Domain` and `AutoMapper 13.0.1`.
   </Card>
-  <Card title="FoundationKit.Extensions" icon="puzzle-piece">
+  <Card title="Foundationkit.Extensions" icon="puzzle-piece">
     Standalone helpers: AES encryption (`AesEncryptionHelper`, `AesConfig`), TweetNaCl asymmetric cipher (`CipherTweetNaCl`), `QueryableExtensions.PaginateAsync`, `EnumExtension.GetDisplayName`, and controller response helpers. No dependency on EF Core.
   </Card>
 </CardGroup>
@@ -71,13 +71,13 @@ FoundationKit is intentionally split into four separate NuGet packages, each wit
     An optional `FoundationKit.Events` package (not required for basic use) adds `AddEvents`, `AddSubscriber`, and `IRabbitMessageBroker.PublishAsync` for lightweight distributed messaging.
   </Card>
   <Card title=".NET 8 & NuGet Distribution" icon="cube">
-    All packages target `net8.0` exclusively and are published to NuGet.org under version **4.1.0**. CI publishing is handled by the `Release to NuGet` GitHub Actions workflow.
+    All packages target `net8.0` exclusively and are published to NuGet.org. The four core packages are at version **4.1.0**; `FoundationKit.Events` is at **0.1.0**. CI publishing is handled by the `Release to NuGet` GitHub Actions workflow.
   </Card>
 </CardGroup>
 
 ## Target Framework & Distribution
 
-All four packages target **`net8.0`** and are distributed via NuGet.org. The current stable release is **4.1.0**. Source code is available at [github.com/Orbis25/FoundationKit](https://github.com/Orbis25/FoundationKit) under the MIT licence.
+All four packages target **`net8.0`** and are distributed via NuGet.org. The four core packages are at stable release **4.1.0**; `FoundationKit.Events` is at **0.1.0**. Source code is available at [github.com/Orbis25/FoundationKit](https://github.com/Orbis25/FoundationKit) under the MIT licence.
 
 <Note>
   FoundationKit does not ship runtime migrations. You are responsible for running `dotnet ef migrations add` and `dotnet ef database update` against your own `DbContext` that inherits `FoundationKitDbContext`.

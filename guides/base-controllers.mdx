@@ -1,5 +1,5 @@
 ---
-title: "Abstract Base Controllers for API and MVC Apps"
+title: "Abstract Base Controllers for REST APIs and MVC Apps"
 sidebarTitle: "Base Controllers"
 description: "ApiCoreController, ApiMapController, and MvcCoreController provide ready-to-use CRUD endpoints. Override any virtual method to customize behavior."
 ---
@@ -7,7 +7,7 @@ description: "ApiCoreController, ApiMapController, and MvcCoreController provide
 FoundationKit ships three abstract controller base classes that eliminate boilerplate CRUD code. `ApiCoreController` targets REST APIs that work directly with domain models, `ApiMapController` adds AutoMapper support for APIs that expose separate input/output DTOs, and `MvcCoreController` handles server-side Razor MVC applications with built-in SweetAlert2 notification support. All three expose virtual methods so you can override any endpoint with custom logic.
 
 <Note>
-All three controllers use the `[Route("api/[controller]")]` attribute convention. The controller name is derived from the class name with the `Controller` suffix removed. For MVC controllers this works alongside the default `{controller}/{action}` convention.
+`ApiCoreController` and `ApiMapController` are decorated with `[Route("api/[controller]")]` and `[ApiController]`. The controller name is derived from the class name with the `Controller` suffix removed. `MvcCoreController` extends `Controller` and has no route attribute — routes are resolved by the standard MVC `{controller}/{action}` convention.
 </Note>
 
 ## ApiCoreController\<TModel, TService\>

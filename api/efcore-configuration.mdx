@@ -1,7 +1,7 @@
 ---
-title: "EFCoreConfiguration<TEntity> — Entity Type Configuration Base"
+title: "EFCoreConfiguration — Entity Type Configuration Base"
 sidebarTitle: "EF Configuration"
-description: "EFCoreConfiguration is an abstract IEntityTypeConfiguration that applies the soft-delete global query filter. Override ConfigureEF to add entity-specific mappings."
+description: "EFCoreConfiguration is an abstract IEntityTypeConfiguration that applies the soft-delete query filter. Implement ConfigureEF for entity-specific mappings."
 ---
 
 Every entity that inherits from `BaseModel` carries an `IsDeleted` flag for
@@ -206,22 +206,22 @@ namespace FoundationKit.Domain.Option;
 
 public class EncryptorOption
 {
-    public string?    PublicKey  { get; set; }
     public string?    PrivateKey { get; set; }
+    public string?    PublicKey  { get; set; }
     public Encoding?  Enconding  { get; set; }
     public string?    HeaderAes  { get; set; }
 }
 ```
 
 <ResponseField name="PublicKey" type="string?">
-  Base64-encoded TweetNaCl public key used for asymmetric encryption operations.
+  Base64-encoded public key used for asymmetric encryption operations.
   Store this in a secrets manager or an environment variable rather than
   directly in `appsettings.json`.
 </ResponseField>
 
 <ResponseField name="PrivateKey" type="string?">
-  Base64-encoded TweetNaCl private key. Must be kept confidential. Never
-  commit this value to source control.
+  Base64-encoded private key. Must be kept confidential. Never commit this
+  value to source control.
 </ResponseField>
 
 <ResponseField name="HeaderAes" type="string?">
@@ -232,8 +232,9 @@ public class EncryptorOption
 
 <ResponseField name="Enconding" type="System.Text.Encoding?">
   The text encoding used when converting between strings and byte arrays
-  during encryption and decryption. Defaults to `UTF-8` when not explicitly
-  set.
+  during encryption and decryption. Note: the property name is spelled
+  `Enconding` (without the second `d`) in the source — use that exact name
+  when binding from configuration or referencing the property in code.
 </ResponseField>
 
 ### Binding from appsettings.json

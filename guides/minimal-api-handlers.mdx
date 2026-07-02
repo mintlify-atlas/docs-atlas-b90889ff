@@ -1,7 +1,7 @@
 ---
-title: "Minimal API Handlers with IEndpointRouteHandler"
+title: "Minimal API Handlers with IEndpointRouteHandler Interface"
 sidebarTitle: "Minimal API Handlers"
-description: "Organize ASP.NET Core Minimal API routes using IEndpointRouteHandler and UseFoundationKitApiHandlers for clean, class-based endpoint registration by feature."
+description: "Move Minimal API routes into classes with IEndpointRouteHandler. UseFoundationKitApiHandlers scans your assembly and registers every handler at startup."
 ---
 
 Placing all Minimal API route definitions directly in `Program.cs` works fine for small projects, but as an application grows the file becomes a maintenance burden. FoundationKit's `IEndpointRouteHandler` pattern moves each feature's routes into its own class, mirroring the organisation you'd use with traditional controllers — but retaining all the performance benefits of Minimal APIs. A single call to `UseFoundationKitApiHandlers` scans your assembly, finds every handler class, and registers all routes automatically.
@@ -58,8 +58,8 @@ public class PeoplesHandler : IEndpointRouteHandler
     {
         var group = app.MapGroup("/api/people").WithTags("People");
 
-        group.MapGet("/",      GetAll)   .WithName("get-all-people");
-        group.MapGet("/{id:guid}", GetById).WithName("get-person-by-id");
+        group.MapGet("/",          GetAll)   .WithName("get-all-people");
+        group.MapGet("/{id:guid}", GetById)  .WithName("get-person-by-id");
     }
 
     private IResult GetAll() =>

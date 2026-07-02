@@ -6,10 +6,6 @@ description: "FoundationKit ships as four independent NuGet packages. Learn what
 
 FoundationKit is designed as a modular suite rather than a single monolithic library. Each package has a single responsibility and explicit dependency boundaries, so you can pull in only what your project genuinely needs — a pure data-access layer for a background worker, the full controller stack for a REST API, or just the encryption and enum helpers for a utility library.
 
-<Note>
-  The project inside the repository is called `FoundationKit.Domain`, but the package is published to NuGet.org under the name **`FoundationKit.EntityFrameworkCore`**. Use the NuGet name when running `dotnet add package`.
-</Note>
-
 ## Package Overview
 
 <CardGroup cols={2}>
@@ -21,7 +17,7 @@ FoundationKit is designed as a modular suite rather than a single monolithic lib
 
     Key extensions: `AddFoundationKit(Assembly)`, `AddFoundationKitEncryptor(EncryptorOption)`, `AddFoundationKitIdentity<TUser, TDbContext>()`, `AddFoundationKitIdentityWithMapper<TUser, TDbContext>(Assembly)`.
   </Card>
-  <Card title="FoundationKit.EntityFrameworkCore" icon="database">
+  <Card title="FoundationKit.Domain" icon="database">
     **Version:** 4.1.0  
     Provides the base persistence primitives. Depends on `Microsoft.EntityFrameworkCore 8.0.4` and `Microsoft.AspNetCore.Identity.EntityFrameworkCore 8.0.4`.
 
@@ -29,13 +25,13 @@ FoundationKit is designed as a modular suite rather than a single monolithic lib
   </Card>
   <Card title="FoundationKit.Repository" icon="arrows-split-up-and-left">
     **Version:** 4.1.0  
-    Generic repository abstractions and implementations. Depends on `FoundationKit.EntityFrameworkCore` and `AutoMapper 13.0.1`.
+    Generic repository abstractions and implementations. Depends on `FoundationKit.Domain` and `AutoMapper 13.0.1`.
 
     Key types: `IBaseRepository<TModel>`, `BaseRepository<TContext, TModel>`, `IMapRepository<TInput, TEdit, TDto>`, `MapRepository<TContext, TModel, TInput, TEdit, TDto>`, `PaginationResult<T>`, `Paginate`.
   </Card>
-  <Card title="FoundationKit.Extensions" icon="puzzle-piece">
+  <Card title="Foundationkit.Extensions" icon="puzzle-piece">
     **Version:** 4.1.0  
-    Pure helpers with no EF Core dependency. Depends only on `FoundationKit.EntityFrameworkCore` (for shared value objects) and `Microsoft.AspNetCore.Mvc.ViewFeatures 2.2.0`.
+    Pure helpers with no direct EF Core dependency. Depends only on `FoundationKit.Domain` (for shared value objects) and `Microsoft.AspNetCore.Mvc.ViewFeatures 2.2.0`.
 
     Key types: `AesEncryptionHelper`, `AesConfig`, `CipherTweetNaCl`, `QueryableExtensions` (`PaginateAsync`, `Paginate`), `EnumExtension` (`GetDisplayName`), `ControllerExtensions` (`AesOk`).
   </Card>
@@ -47,19 +43,19 @@ FoundationKit is designed as a modular suite rather than a single monolithic lib
 
 ```bash Install all four packages
 dotnet add package FoundationKit
-dotnet add package FoundationKit.EntityFrameworkCore
+dotnet add package FoundationKit.Domain
 dotnet add package FoundationKit.Repository
-dotnet add package FoundationKit.Extensions
+dotnet add package Foundationkit.Extensions
 ```
 
 ```bash Repository layer only
-dotnet add package FoundationKit.EntityFrameworkCore
+dotnet add package FoundationKit.Domain
 dotnet add package FoundationKit.Repository
 ```
 
 ```bash Extensions and helpers only
-dotnet add package FoundationKit.EntityFrameworkCore
-dotnet add package FoundationKit.Extensions
+dotnet add package FoundationKit.Domain
+dotnet add package Foundationkit.Extensions
 ```
 
 </CodeGroup>
@@ -105,7 +101,7 @@ public abstract class ApiMapController<TService, TDtoModel, TInputModel, TEditMo
 
 ---
 
-### FoundationKit.EntityFrameworkCore
+### FoundationKit.Domain
 
 Provides the data model primitives and `DbContext` bases that every other package builds on.
 
@@ -122,7 +118,7 @@ public abstract class BaseModel
     public virtual string? UpdatedBy { get; set; }
 
     [NotMapped] public string CreatedAtStr => CreatedAt.ToString("dd/MM/yyyy hh:mm:ss");
-    [NotMapped] public string UpdateAtStr  => ...;
+    [NotMapped] public string UpdateAtStr  => UpdatedAt != null ? UpdatedAt.Value.ToString("dd/MM/yyyy hh:mm:ss") : "";
 }
 ```
 
@@ -174,7 +170,7 @@ Provides both a direct entity repository and a DTO-mapped repository.
 
 ---
 
-### FoundationKit.Extensions
+### Foundationkit.Extensions
 
 Independent helper types that can be used in any .NET 8 project regardless of whether EF Core or the controller layer is present.
 
@@ -213,12 +209,16 @@ string label = MyEnum.ActiveUser.GetDisplayName();
 | Scenario | Packages to install |
 |---|---|
 | **Full REST API** — controllers, CRUD, pagination, encryption | `FoundationKit` (pulls in all others) |
-| **API without encryption or Identity** | `FoundationKit`, `FoundationKit.EntityFrameworkCore`, `FoundationKit.Repository` |
-| **Background worker / data-access only** | `FoundationKit.EntityFrameworkCore`, `FoundationKit.Repository` |
+| **API without encryption or Identity** | `FoundationKit`, `FoundationKit.Domain`, `FoundationKit.Repository` |
+| **Background worker / data-access only** | `FoundationKit.Domain`, `FoundationKit.Repository` |
 | **API with ASP.NET Core Identity** | `FoundationKit` + call `AddFoundationKitIdentity` or `AddFoundationKitIdentityWithMapper` |
-| **Utility library — enum helpers, AES, pagination only** | `FoundationKit.Extensions` (+ `FoundationKit.EntityFrameworkCore` for shared value objects) |
-| **DTO-mapped repository with AutoMapper** | `FoundationKit.Repository`, `FoundationKit.EntityFrameworkCore` + configure AutoMapper profiles |
+| **Utility library — enum helpers, AES, pagination only** | `Foundationkit.Extensions` (+ `FoundationKit.Domain` for shared value objects) |
+| **DTO-mapped repository with AutoMapper** | `FoundationKit.Repository`, `FoundationKit.Domain` + configure AutoMapper profiles |
 
 <Tip>
-  Installing the umbrella `FoundationKit` package is the fastest path for new REST API projects. If package size or dependency footprint matters — for example in a Lambda or Azure Function — install `FoundationKit.Repository` and `FoundationKit.EntityFrameworkCore` directly and skip the controller layer.
+  Installing the umbrella `FoundationKit` package is the fastest path for new REST API projects. If package size or dependency footprint matters — for example in a Lambda or Azure Function — install `FoundationKit.Repository` and `FoundationKit.Domain` directly and skip the controller layer.
 </Tip>
+
+<Note>
+  The optional `FoundationKit.Events` package (version **0.1.0**) adds RabbitMQ-backed messaging via `AddEvents`, `AddSubscriber`, and `IRabbitMessageBroker.PublishAsync`. It is independent of the four core packages and is not required for basic use.
+</Note>

@@ -1,7 +1,7 @@
 ---
-title: "Event Bus API: IRabbitMessageBroker, IMessageHandler, and EventExtensions"
+title: "FoundationKit.Events — RabbitMQ Event Bus API"
 sidebarTitle: "Event Extensions"
-description: "Complete API reference for FoundationKit.Events: the AddEvents and AddSubscriber DI extensions, IRabbitMessageBroker publisher, IMessageHandler consumer interface, and message types."
+description: "FoundationKit.Events API: AddEvents and AddSubscriber DI setup, IRabbitMessageBroker publishing, IMessageHandler consumers, and RabbitMQ message types."
 ---
 
 `FoundationKit.Events` provides a first-class RabbitMQ event bus built on top of the official `RabbitMQ.Client` library. It covers the full publish/subscribe lifecycle: a fluent DI setup that connects to the broker at startup, an `IRabbitMessageBroker` service for publishing typed messages, an `IMessageHandler<T>` interface for consuming them, and an automatic background service that wires consumers to their queues. All message types, exchange topology, and handler registrations are discovered at startup with zero boilerplate.
@@ -324,6 +324,7 @@ public sealed class EventMessage<T> : IEventMessage<T> where T : IMessage
     public DateTime      CreatedAt      { get; }
     public EventMetadata EventMetadata  { get; }
     public T             Data           { get; }
+    public object        GetData()      => Data;
 }
 ```
 

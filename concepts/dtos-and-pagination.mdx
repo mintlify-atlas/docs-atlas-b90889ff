@@ -1,7 +1,7 @@
 ---
-title: "DTOs and Pagination in FoundationKit"
+title: "DTOs and Pagination in FoundationKit .NET 8"
 sidebarTitle: "DTOs & Pagination"
-description: "Learn how FoundationKit's BaseInput, BaseEdit, BaseOutput, Paginate, and PaginationResult types standardize data transfer and list responses across your application."
+description: "Learn how FoundationKit's BaseInput, BaseEdit, BaseOutput, Paginate, and PaginationResult types standardize data transfer and list responses in your API."
 ---
 
 FoundationKit provides a small set of base classes and query models that standardise how data flows into and out of your API. Rather than inventing a new shape for every endpoint, every create operation starts from `BaseInput`, every update from `BaseEdit`, and every read response from `BaseOutput`. List endpoints are paginated uniformly using the `Paginate` query model and always return a `PaginationResult<T>` wrapper. This consistency means your controllers, repositories, and clients all speak the same language, and cross-cutting concerns like hiding internal audit fields from callers are handled once in the base classes rather than repeated across every DTO.
@@ -175,6 +175,7 @@ The following is the full set of DTO classes from the FoundationKit example proj
     ```csharp
     // Mappings/PersonProfile.cs
     using AutoMapper;
+    using FoundationKit.API.Example.Domain.Mappings;
 
     public class PersonProfile : Profile
     {
@@ -222,7 +223,7 @@ public class Paginate
 </ParamField>
 
 <ParamField query="NoPaginate" type="bool" default="false">
-  When `true`, pagination is skipped entirely and all matching records are returned in a single `PaginationResult` with `ActualPage`, `Qyt`, `PageTotal`, and `Total` all set to `0` or `1`. Useful for dropdown/autocomplete scenarios where you need the full list.
+  When `true`, pagination is skipped and all matching records are returned in a single `PaginationResult` with `ActualPage`, `Qyt`, `PageTotal`, and `Total` all at their default values. This behaviour is implemented by `BaseRepository.GetPaginatedListAsync` and the `QueryableExtensions.PaginateAsync` extension method. `MapRepository.GetPaginatedList` does not implement `NoPaginate` handling and always paginates.
 </ParamField>
 
 <ParamField query="Query" type="string">
@@ -286,19 +287,19 @@ public class PaginationResult<T>
 </ResponseField>
 
 <ResponseField name="pageTotal" type="int">
-  The total number of pages available, calculated as `ceil(Total / Qyt)`. Useful for rendering pagination controls on the client.
+  The total number of pages available, calculated as `ceil(Total / Qyt)`.
 </ResponseField>
 
 <ResponseField name="total" type="int">
-  The total number of records that match the filter, across all pages. `0` when `NoPaginate` is `true`.
+  The total number of records that match the filter, across all pages.
 </ResponseField>
 
 <ResponseField name="query" type="string">
-  Echo of the search term from the `Paginate` request, or `null` if none was supplied. Useful for the client to display "showing results for…" messages.
+  Echo of the search term from the `Paginate` request, or `null` if none was supplied.
 </ResponseField>
 
-<ResponseField name="results" type="IReadOnlyCollection<T>">
-  The records for the current page. An empty collection (never `null` in practice) when no records match.
+<ResponseField name="results" type="IReadOnlyCollection<T>?">
+  The records for the current page. `null` when no records match or when the repository has not populated the field.
 </ResponseField>
 
 ### Example JSON response
@@ -337,7 +338,7 @@ The `Foundationkit.Extensions.Enumerations.QueryableExtensions` class provides t
 
 ### PaginateAsync
 
-Asynchronously materialises the query into a `PaginationResult<T>`. Respects `NoPaginate` — when set, all results are returned without slicing.
+Asynchronously materialises the query into a `PaginationResult<TSource?>`. When `NoPaginate` is `true`, all results are returned without slicing and `ActualPage`, `Qyt`, `PageTotal`, and `Total` are left at their default values.
 
 ```csharp
 using Foundationkit.Extensions.Enumerations;

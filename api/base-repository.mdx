@@ -1,5 +1,5 @@
 ---
-title: "BaseRepository<TContext, TModel> — EF Core Repository Base Class"
+title: "BaseRepository<TContext, TModel> — EF Core Repository"
 sidebarTitle: "BaseRepository"
 description: "BaseRepository is the abstract EF Core implementation of IBaseRepository. Extend it with your DbContext and entity type to get full CRUD with transactions."
 ---
@@ -81,7 +81,11 @@ Calls `GetAll` to build the filtered, ordered query, then applies Skip/Take base
 
 ```csharp
 public virtual async Task<PaginationResult<TModel>> GetPaginatedListAsync(
-    Paginate paginate, ...)
+    Paginate paginate,
+    Expression<Func<TModel, bool>>? expression = default,
+    Expression<Func<TModel, object>>? ordered = default,
+    CancellationToken cancellationToken = default,
+    params Expression<Func<TModel, object>>[] includes)
 ```
 
 **Pagination metadata** is populated only when `NoPaginate` is `false`:
@@ -98,6 +102,73 @@ When `NoPaginate` is `true`, only `Results` is populated; all numeric metadata f
 
 ---
 
+### GetListAsync
+
+Delegates to `GetAll` and materialises the result with `ToListAsync`. This is the simplest way to retrieve a filtered, ordered, in-memory collection without dealing with `IQueryable` composition.
+
+```csharp
+public virtual async Task<IEnumerable<TModel>> GetListAsync(
+    bool orderDesc = true,
+    Expression<Func<TModel, bool>>? expression = null,
+    Expression<Func<TModel, object>>? ordered = null,
+    CancellationToken cancellationToken = default,
+    params Expression<Func<TModel, object>>[] includes)
+    => await GetAll(expression, orderDesc, ordered, includes).ToListAsync(cancellationToken);
+```
+
+The parameter order differs from `GetAll`: `orderDesc` comes first so that the most common customisation (changing sort direction) does not require naming the other arguments.
+
+---
+
+### GetByIdAsync
+
+Calls `GetAll` with a `CreatedAt` descending sort, optionally switches to `AsNoTracking`, then executes `FirstOrDefaultAsync` for the given `Id`.
+
+```csharp
+public virtual async Task<TModel?> GetByIdAsync(
+    Guid id,
+    bool asNotTraking = false,
+    CancellationToken cancellationToken = default,
+    params Expression<Func<TModel, object>>[] includes)
+```
+
+<ParamField path="id" type="Guid" required>
+  Primary key of the entity to retrieve.
+</ParamField>
+
+<ParamField path="asNotTraking" type="bool" default="false">
+  When `true`, calls `AsNoTracking()` before executing — suitable for read-only lookups that will not be modified.
+</ParamField>
+
+<ParamField path="cancellationToken" type="CancellationToken" default="default">
+  Propagates cancellation.
+</ParamField>
+
+<ParamField path="includes" type="params Expression<Func<TModel, object>>[]">
+  Navigation-property selectors for eager loading.
+</ParamField>
+
+<ResponseField name="TModel?" type="Task">
+  The matched entity, or `null` when no record with the given `Id` exists.
+</ResponseField>
+
+---
+
+### GetOneAsync
+
+Returns the first entity in the `DbSet` that matches the predicate, using EF Core's `FirstOrDefaultAsync`.
+
+```csharp
+public Task<TModel?> GetOneAsync(
+    Expression<Func<TModel, bool>> expression,
+    CancellationToken cancellationToken = default)
+    => _context.Set<TModel>().FirstOrDefaultAsync(expression, cancellationToken);
+```
+
+Unlike `GetByIdAsync`, no includes or ordering are applied — the query goes directly to `FirstOrDefaultAsync`. Use this for simple single-row lookups by a non-primary-key predicate.
+
+---
+
 ### UpdateAsync
 
 Applies `DbSet<TModel>.Update(model)` and commits. The `verifyEntity` flag controls whether a pre-fetch guards against overwriting audit fields.
@@ -110,12 +181,19 @@ public virtual async Task<TModel?> UpdateAsync(
 ```
 
 When `verifyEntity == true`:
-1. `GetByIdAsync(model.Id, asNotTracking: true)` is called to retrieve the current stored entity.
+1. `GetByIdAsync(model.Id, asNotTraking: true)` is called to retrieve the current stored entity.
 2. If the entity is not found, `null` is returned immediately (no update is attempted).
 3. `CreatedBy` and `CreatedAt` from the stored entity are copied onto `model` to prevent accidental audit-field corruption.
 4. `Update(model)` and `CommitAsync` are called.
 
 When `verifyEntity == false` the pre-fetch is skipped entirely — use this when you have already loaded the entity in the same unit of work and can guarantee the audit fields are correct.
+
+A two-parameter convenience overload is also available; it delegates to the full overload with `verifyEntity: false`:
+
+```csharp
+public virtual Task<TModel?> UpdateAsync(TModel model, CancellationToken cancellationToken = default)
+    => UpdateAsync(model, cancellationToken, default);
+```
 
 ---
 
@@ -153,6 +231,66 @@ public virtual async Task<bool> SoftRemoveAsync(Guid id, CancellationToken cance
 ```
 
 Returns `false` immediately (without touching the database) when no entity with the given `Id` exists.
+
+---
+
+### RemoveAsync
+
+Permanently deletes the entity by fetching it with `GetByIdAsync(id, asNotTraking: true)` and then calling `DbSet<TModel>.Remove` followed by `CommitAsync`.
+
+```csharp
+public virtual async Task<bool> RemoveAsync(Guid id, CancellationToken cancellationToken = default)
+```
+
+Returns `false` immediately when no entity with the given `Id` exists. This operation cannot be undone.
+
+---
+
+### ExistAsync
+
+Returns whether at least one entity matching the optional predicate exists. When `expression` is `null`, calls `AnyAsync()` without a predicate — returning `true` if the table has any rows.
+
+```csharp
+public async Task<bool> ExistAsync(
+    Expression<Func<TModel, bool>>? expression = default,
+    CancellationToken cancellationToken = default)
+```
+
+<ParamField path="expression" type="Expression<Func<TModel, bool>>?" default="null">
+  Optional filter predicate. When `null`, returns `true` if the table contains any rows.
+</ParamField>
+
+<ParamField path="cancellationToken" type="CancellationToken" default="default">
+  Propagates cancellation.
+</ParamField>
+
+<ResponseField name="bool" type="Task">
+  `true` if at least one matching row exists; otherwise `false`.
+</ResponseField>
+
+---
+
+### CountAsync
+
+Chains zero or more `Where` predicates on the `DbSet<TModel>` and returns the row count.
+
+```csharp
+public async Task<int> CountAsync(
+    CancellationToken cancellationToken = default,
+    params Expression<Func<TModel, bool>>[] expression)
+```
+
+<ParamField path="cancellationToken" type="CancellationToken" default="default">
+  Propagates cancellation.
+</ParamField>
+
+<ParamField path="expression" type="params Expression<Func<TModel, bool>>[]">
+  Zero or more filter predicates. Each is applied as a successive `Where` call (logical AND). Passing no expressions counts all rows.
+</ParamField>
+
+<ResponseField name="int" type="Task">
+  The row count satisfying all predicates.
+</ResponseField>
 
 ---
 
@@ -238,9 +376,6 @@ public class OrderRepository
 ```csharp Registration
 // Program.cs / Startup.cs
 builder.Services.AddScoped<IOrderRepository, OrderRepository>();
-
-// Or use the FoundationKit extension (registers all repositories in the assembly)
-builder.Services.AddFoundationKit(Assembly.GetExecutingAssembly());
 ```
 
 ```csharp Partial Update Example

@@ -1,7 +1,7 @@
 ---
 title: "Encrypting Data with FoundationKit: AES and TweetNaCl"
 sidebarTitle: "Encryption"
-description: "FoundationKit provides AES symmetric encryption and TweetNaCl/Curve25519 asymmetric encryption via IEncryptorService, plus a request-body decryption middleware."
+description: "Encrypt payloads with AES or TweetNaCl via IEncryptorService. A built-in middleware decrypts AES-encrypted request bodies before controllers see them."
 ---
 
 FoundationKit bundles two encryption modes behind a single `IEncryptorService` abstraction. The **TweetNaCl / Curve25519** mode (`EncryptCore` / `DecryptCore`) provides asymmetric, authenticated encryption suitable for key exchange and encrypting AES configs sent from clients. The **AES-CBC** mode (`AESEncrypt` / `AESDecrypt`) handles bulk data encryption once both sides have agreed on a key and IV. A purpose-built middleware (`FoundationKitAesEncryptorMiddleware`) uses both together: the client sends an AES config encrypted with TweetNaCl in a request header, and the middleware decrypts the request body transparently before controllers see it.
@@ -33,7 +33,7 @@ builder.Services.AddFoundationKitEncryptor(new EncryptorOption
 });
 ```
 
-By default `IEncryptorService` is registered with `ServiceLifetime.Scoped`. Pass a different `ServiceLifetime` as the second argument if needed:
+`AddFoundationKitEncryptor` accepts an optional `ServiceLifetime` parameter that controls how `EncryptorOption` is registered (defaults to `Singleton`). `IEncryptorService` itself is always registered as `Scoped`:
 
 ```csharp
 builder.Services.AddFoundationKitEncryptor(options, ServiceLifetime.Singleton);

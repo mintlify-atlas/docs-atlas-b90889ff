@@ -1,7 +1,7 @@
 ---
-title: "RabbitMQ Event Bus with FoundationKit Events"
+title: "RabbitMQ Event Bus Integration with FoundationKit Events"
 sidebarTitle: "Event Bus"
-description: "FoundationKit.Events wires up a RabbitMQ publisher, typed message handlers, and a background consumer service with automatic handler discovery in ASP.NET Core."
+description: "FoundationKit.Events provides RabbitMQ publishing, typed handlers, and a background consumer that auto-discovers all IMessageHandler classes at startup."
 ---
 
 `FoundationKit.Events` provides a lightweight, convention-driven event bus on top of RabbitMQ. A single `AddEvents` call wires up the connection, declares the exchange, registers the `IRabbitMessageBroker` publisher, scans all loaded assemblies for `IMessageHandler<T>` implementations, and starts a background `RabbitMqConsumerService` that dispatches incoming messages to the right handler automatically — no manual consumer registration needed.
@@ -60,10 +60,12 @@ When published, the message is wrapped in an `EventMessage<T>` envelope that car
 ```csharp
 public sealed class EventMessage<T> : IEventMessage<T> where T : IMessage
 {
-    public string MessageId   { get; }   // unique message identifier
-    public string MessageName { get; }   // typeof(T).Name
-    public DateTime CreatedAt { get; }
-    public T Data             { get; }   // your message payload
+    public string MessageId     { get; }   // unique message identifier
+    public string MessageName   { get; }   // typeof(T).Name
+    public DateTime CreatedAt   { get; }   // creation timestamp
+    public EventMetadata EventMetadata { get; }
+    public T Data               { get; }   // your message payload
+    public object GetData()     => Data;
 }
 ```
 
@@ -166,14 +168,11 @@ public class TestEventHandler : IMessageHandler<TestEvent>
     {
         try
         {
-            _logger.LogInformation("Received TestEvent: {Name}", message.Name);
-            // process the event...
+            _logger.LogInformation("Handling TestEvent with Name: {Name}", message.Name);
         }
-        catch (Exception ex)
+        catch (Exception e)
         {
-            _logger.LogError("Error handling TestEvent: {Message}", ex.Message);
-            // re-throw to trigger a nack and optional redelivery
-            throw;
+            _logger.LogError("Error handling TestEvent: {Message}", e.Message);
         }
     }
 }
@@ -215,7 +214,6 @@ If `HandleAsync` throws an unhandled exception the background service calls `Bas
 // Program.cs
 using FoundationKit.Events.Extensions;
 using FoundationKit.Events.RabbitMQ.Config;
-using FoundationKit.Events.RabbitMQ.ValueObjects;
 
 var builder = WebApplication.CreateBuilder(args);
 

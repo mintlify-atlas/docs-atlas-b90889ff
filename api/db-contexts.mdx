@@ -1,7 +1,7 @@
 ---
 title: "FoundationKitDbContext and FoundationKitIdentityDbContext"
 sidebarTitle: "DbContexts"
-description: "Abstract EF Core DbContext base classes that automatically set CreatedAt and UpdatedAt on every SaveChanges call. Choose the Identity variant for apps using ASP.NET Core Identity."
+description: "Abstract EF Core DbContext base classes that auto-stamp CreatedAt and UpdatedAt on every save. Pick the Identity variant for ASP.NET Core Identity apps."
 ---
 
 FoundationKit ships two abstract EF Core `DbContext` base classes that take care of the most repetitive concern in any data layer: keeping `CreatedAt` and `UpdatedAt` accurate on every save operation. Both classes intercept `SaveChanges` and `SaveChangesAsync`, walk the change tracker for any entities that derive from `BaseModel`, and stamp the correct timestamp — either local time or UTC — depending on a single application-wide flag. You pick the right class based on whether your application also uses ASP.NET Core Identity.
@@ -65,11 +65,11 @@ public abstract class FoundationKitDbContext(DbContextOptions options)
 
 ### Behaviour summary
 
-| Entity state   | Field set    | Value                                          |
-|----------------|--------------|------------------------------------------------|
-| `Added`        | `CreatedAt`  | `DateTime.UtcNow` or `DateTime.Now`            |
-| `Modified`     | `UpdatedAt`  | `DateTime.UtcNow` or `DateTime.Now`            |
-| Any other state | *(nothing)* | —                                              |
+| Entity state    | Field set    | Value                               |
+|-----------------|--------------|-------------------------------------|
+| `Added`         | `CreatedAt`  | `DateTime.UtcNow` or `DateTime.Now` |
+| `Modified`      | `UpdatedAt`  | `DateTime.UtcNow` or `DateTime.Now` |
+| Any other state | *(nothing)*  | —                                   |
 
 Only entities whose runtime type is assignable to `BaseModel` are affected. Plain EF Core entities that do not inherit from `BaseModel` are untouched.
 
